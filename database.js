@@ -1,8 +1,13 @@
 const { Pool } = require('pg');
 
-// pg automatically uses the DATABASE_URL environment variable on Render
+// Log the database URL to ensure it's being loaded from the environment
+console.log('Connecting with DATABASE_URL:', process.env.DATABASE_URL ? 'Loaded' : 'Not Found');
+
+// Initialize the connection pool
 const pool = new Pool({
+  // The connectionString is automatically read from the DATABASE_URL environment variable
   connectionString: process.env.DATABASE_URL,
+  // Add this SSL configuration for connecting to Render's managed databases
   ssl: {
     rejectUnauthorized: false
   }
@@ -32,11 +37,15 @@ const createTables = async () => {
   `;
 
   try {
+    // Test the connection
+    await pool.query('SELECT NOW()'); 
+    console.log('Database connection successful.');
+
     await pool.query(userTableQuery);
     await pool.query(flightTableQuery);
     console.log('Tables created or already exist.');
   } catch (err) {
-    console.error('Error creating tables', err);
+    console.error('Error connecting to database or creating tables:', err);
   }
 };
 
