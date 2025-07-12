@@ -132,9 +132,52 @@ const createTables = async () => {
     await pool.query(alertsTableQuery);
     console.log('All tables created or already exist.');
 
-    // Create indexes
+    // Add missing columns to existing flights table (migration)
+    const migrationQueries = [
+      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS booking_hash VARCHAR(50);`,
+      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS departure_date_time TIMESTAMP;`,
+      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS arrival_date_time TIMESTAMP;`,
+      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS departure_time VARCHAR(50);`,
+      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS arrival_time VARCHAR(50);`,
+      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS flight_number VARCHAR(20);`,
+      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS aircraft VARCHAR(100);`,
+      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS service_class VARCHAR(50);`,
+      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS base_fare NUMERIC(10, 2);`,
+      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS taxes_fees NUMERIC(10, 2);`,
+      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS total_price_text VARCHAR(100);`,
+      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS currency VARCHAR(10) DEFAULT 'USD';`,
+      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS lowest_price_seen NUMERIC(10, 2);`,
+      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS price_drop_amount NUMERIC(10, 2);`,
+      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS price_alert_sent BOOLEAN DEFAULT FALSE;`,
+      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS passenger_count INTEGER DEFAULT 1;`,
+      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS scraped_at TIMESTAMP DEFAULT NOW();`,
+      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS booking_url TEXT;`,
+      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;`,
+      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS check_frequency_hours INTEGER DEFAULT 24;`,
+      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS next_check_at TIMESTAMP DEFAULT NOW() + INTERVAL '24 hours';`,
+      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();`,
+      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();`
+    ];
+
+    for (const migrationQuery of migrationQueries) {
+      try {
+        await pool.query(migrationQuery);
+      } catch (err) {
+        // Ignore errors for columns that already exist
+        if (!err.message.includes('already exists')) {
+          console.warn('Migration warning:', err.message);
+        }
+      }
+    }
+    console.log('Database migration completed.');
+
+    // Create indexes (now that columns exist)
     for (const indexQuery of indexQueries) {
-      await pool.query(indexQuery);
+      try {
+        await pool.query(indexQuery);
+      } catch (err) {
+        console.warn('Index creation warning:', err.message);
+      }
     }
     console.log('Database indexes created.');
 
