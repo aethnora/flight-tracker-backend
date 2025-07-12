@@ -27,7 +27,7 @@ const createTables = async () => {
       
       -- Basic booking information
       booking_reference VARCHAR(50) NOT NULL,
-      booking_hash VARCHAR(50) UNIQUE, -- For duplicate prevention
+      booking_hash VARCHAR(50) UNIQUE,
       airline VARCHAR(100),
       
       -- Route information
@@ -45,20 +45,23 @@ const createTables = async () => {
       -- Flight details
       flight_number VARCHAR(20),
       aircraft VARCHAR(100),
-      service_class VARCHAR(50), -- First, Business, Premium Economy, Economy, Basic Economy
+      service_class VARCHAR(50),
       
       -- Pricing information
       total_price NUMERIC(10, 2),
       base_fare NUMERIC(10, 2),
       taxes_fees NUMERIC(10, 2),
-      total_price_text VARCHAR(100), -- Original price text for reference
+      total_price_text VARCHAR(100),
       currency VARCHAR(10) DEFAULT 'USD',
       
-      -- Price monitoring
-      original_price NUMERIC(10, 2), -- Will be same as total_price initially
+      -- Price monitoring (legacy columns for compatibility)
+      original_price NUMERIC(10, 2),
       last_checked_price NUMERIC(10, 2),
-      price_drop_amount NUMERIC(10, 2), -- Calculated field
+      departure_date_legacy TIMESTAMP, -- Old column name
+      
+      -- New price monitoring fields
       lowest_price_seen NUMERIC(10, 2),
+      price_drop_amount NUMERIC(10, 2),
       price_alert_sent BOOLEAN DEFAULT FALSE,
       
       -- Additional information
@@ -67,9 +70,9 @@ const createTables = async () => {
       booking_url TEXT,
       
       -- Monitoring metadata
-      is_active BOOLEAN DEFAULT TRUE, -- Can be disabled if flight is past or cancelled
+      is_active BOOLEAN DEFAULT TRUE,
       last_checked_at TIMESTAMP DEFAULT NOW(),
-      check_frequency_hours INTEGER DEFAULT 24, -- How often to check prices
+      check_frequency_hours INTEGER DEFAULT 24,
       next_check_at TIMESTAMP DEFAULT NOW() + INTERVAL '24 hours',
       
       -- Timestamps
@@ -87,10 +90,9 @@ const createTables = async () => {
       flight_id INTEGER REFERENCES flights(flight_id) ON DELETE CASCADE,
       price NUMERIC(10, 2),
       currency VARCHAR(10) DEFAULT 'USD',
-      source VARCHAR(100), -- Where the price was found (airline website, etc.)
+      source VARCHAR(100),
       checked_at TIMESTAMP DEFAULT NOW(),
       
-      -- Additional context
       available_seats INTEGER,
       fare_class VARCHAR(50),
       notes TEXT
@@ -102,76 +104,124 @@ const createTables = async () => {
       alert_id SERIAL PRIMARY KEY,
       flight_id INTEGER REFERENCES flights(flight_id) ON DELETE CASCADE,
       user_id VARCHAR(255) REFERENCES users(user_id),
-      alert_type VARCHAR(50), -- 'price_drop', 'availability', 'schedule_change'
-      threshold_price NUMERIC(10, 2), -- Alert if price drops below this
+      alert_type VARCHAR(50),
+      threshold_price NUMERIC(10, 2),
       is_active BOOLEAN DEFAULT TRUE,
       last_triggered TIMESTAMP,
       created_at TIMESTAMP DEFAULT NOW()
     );
   `;
 
-  // Create indexes for better query performance
-  const indexQueries = [
-    `CREATE INDEX IF NOT EXISTS idx_flights_user_id ON flights(user_id);`,
-    `CREATE INDEX IF NOT EXISTS idx_flights_booking_hash ON flights(booking_hash);`,
-    `CREATE INDEX IF NOT EXISTS idx_flights_next_check ON flights(next_check_at) WHERE is_active = true;`,
-    `CREATE INDEX IF NOT EXISTS idx_flights_departure_date ON flights(departure_date_time);`,
-    `CREATE INDEX IF NOT EXISTS idx_price_history_flight_id ON price_history(flight_id);`,
-    `CREATE INDEX IF NOT EXISTS idx_price_history_checked_at ON price_history(checked_at);`
-  ];
-
   try {
     // Test the connection
     await pool.query('SELECT NOW()'); 
     console.log('Database connection successful.');
 
-    // Create tables
+    // Create/update users table
     await pool.query(userTableQuery);
-    await pool.query(flightTableQuery);
-    await pool.query(priceHistoryTableQuery);
-    await pool.query(alertsTableQuery);
-    console.log('All tables created or already exist.');
+    console.log('Users table ready.');
 
-    // Add missing columns to existing flights table (migration)
-    const migrationQueries = [
-      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS booking_hash VARCHAR(50);`,
-      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS departure_date_time TIMESTAMP;`,
-      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS arrival_date_time TIMESTAMP;`,
-      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS departure_time VARCHAR(50);`,
-      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS arrival_time VARCHAR(50);`,
-      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS flight_number VARCHAR(20);`,
-      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS aircraft VARCHAR(100);`,
-      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS service_class VARCHAR(50);`,
-      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS base_fare NUMERIC(10, 2);`,
-      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS taxes_fees NUMERIC(10, 2);`,
-      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS total_price_text VARCHAR(100);`,
-      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS currency VARCHAR(10) DEFAULT 'USD';`,
-      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS lowest_price_seen NUMERIC(10, 2);`,
-      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS price_drop_amount NUMERIC(10, 2);`,
-      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS price_alert_sent BOOLEAN DEFAULT FALSE;`,
-      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS passenger_count INTEGER DEFAULT 1;`,
-      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS scraped_at TIMESTAMP DEFAULT NOW();`,
-      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS booking_url TEXT;`,
-      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;`,
-      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS check_frequency_hours INTEGER DEFAULT 24;`,
-      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS next_check_at TIMESTAMP DEFAULT NOW() + INTERVAL '24 hours';`,
-      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();`,
-      `ALTER TABLE flights ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();`
-    ];
-
-    for (const migrationQuery of migrationQueries) {
+    // For flights table, we need to check if it exists and migrate if needed
+    const tableExistsQuery = `
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_name = 'flights'
+      );
+    `;
+    
+    const tableExists = await pool.query(tableExistsQuery);
+    
+    if (!tableExists.rows[0].exists) {
+      // Table doesn't exist, create it with full schema
+      console.log('Creating new flights table...');
+      await pool.query(flightTableQuery);
+      console.log('Flights table created.');
+    } else {
+      // Table exists, need to add missing columns
+      console.log('Flights table exists, checking for missing columns...');
+      
+      // Get current columns
+      const columnsQuery = `
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_name = 'flights'
+      `;
+      const columns = await pool.query(columnsQuery);
+      const existingColumns = columns.rows.map(row => row.column_name);
+      
+      console.log('Existing columns:', existingColumns);
+      
+      // Define required columns and their types
+      const requiredColumns = {
+        'booking_reference': 'VARCHAR(50)',
+        'booking_hash': 'VARCHAR(50)',
+        'departure_date_time': 'TIMESTAMP',
+        'arrival_date_time': 'TIMESTAMP',
+        'departure_time': 'VARCHAR(50)',
+        'arrival_time': 'VARCHAR(50)',
+        'flight_number': 'VARCHAR(20)',
+        'aircraft': 'VARCHAR(100)',
+        'service_class': 'VARCHAR(50)',
+        'base_fare': 'NUMERIC(10, 2)',
+        'taxes_fees': 'NUMERIC(10, 2)',
+        'total_price_text': 'VARCHAR(100)',
+        'currency': 'VARCHAR(10) DEFAULT \'USD\'',
+        'lowest_price_seen': 'NUMERIC(10, 2)',
+        'price_drop_amount': 'NUMERIC(10, 2)',
+        'price_alert_sent': 'BOOLEAN DEFAULT FALSE',
+        'passenger_count': 'INTEGER DEFAULT 1',
+        'scraped_at': 'TIMESTAMP DEFAULT NOW()',
+        'booking_url': 'TEXT',
+        'is_active': 'BOOLEAN DEFAULT TRUE',
+        'check_frequency_hours': 'INTEGER DEFAULT 24',
+        'next_check_at': 'TIMESTAMP DEFAULT NOW() + INTERVAL \'24 hours\'',
+        'created_at': 'TIMESTAMP DEFAULT NOW()',
+        'updated_at': 'TIMESTAMP DEFAULT NOW()'
+      };
+      
+      // Add missing columns
+      for (const [columnName, columnType] of Object.entries(requiredColumns)) {
+        if (!existingColumns.includes(columnName)) {
+          try {
+            const alterQuery = `ALTER TABLE flights ADD COLUMN ${columnName} ${columnType};`;
+            await pool.query(alterQuery);
+            console.log(`Added column: ${columnName}`);
+          } catch (err) {
+            console.warn(`Failed to add column ${columnName}:`, err.message);
+          }
+        }
+      }
+      
+      // Add unique constraint if it doesn't exist
       try {
-        await pool.query(migrationQuery);
+        await pool.query(`
+          ALTER TABLE flights 
+          ADD CONSTRAINT unique_booking_per_user_new 
+          UNIQUE(user_id, booking_hash);
+        `);
+        console.log('Added unique constraint.');
       } catch (err) {
-        // Ignore errors for columns that already exist
         if (!err.message.includes('already exists')) {
-          console.warn('Migration warning:', err.message);
+          console.warn('Constraint warning:', err.message);
         }
       }
     }
-    console.log('Database migration completed.');
 
-    // Create indexes (now that columns exist)
+    // Create other tables
+    await pool.query(priceHistoryTableQuery);
+    await pool.query(alertsTableQuery);
+    console.log('All tables ready.');
+
+    // Create indexes
+    const indexQueries = [
+      `CREATE INDEX IF NOT EXISTS idx_flights_user_id ON flights(user_id);`,
+      `CREATE INDEX IF NOT EXISTS idx_flights_booking_hash ON flights(booking_hash);`,
+      `CREATE INDEX IF NOT EXISTS idx_flights_next_check ON flights(next_check_at) WHERE is_active = true;`,
+      `CREATE INDEX IF NOT EXISTS idx_flights_departure_date ON flights(departure_date_time);`,
+      `CREATE INDEX IF NOT EXISTS idx_price_history_flight_id ON price_history(flight_id);`,
+      `CREATE INDEX IF NOT EXISTS idx_price_history_checked_at ON price_history(checked_at);`
+    ];
+
     for (const indexQuery of indexQueries) {
       try {
         await pool.query(indexQuery);
@@ -179,34 +229,41 @@ const createTables = async () => {
         console.warn('Index creation warning:', err.message);
       }
     }
-    console.log('Database indexes created.');
+    console.log('Database indexes ready.');
 
     // Add triggers for updated_at timestamps
-    const triggerQuery = `
-      CREATE OR REPLACE FUNCTION update_updated_at_column()
-      RETURNS TRIGGER AS $$
-      BEGIN
-          NEW.updated_at = NOW();
-          RETURN NEW;
-      END;
-      $$ language 'plpgsql';
+    try {
+      const triggerQuery = `
+        CREATE OR REPLACE FUNCTION update_updated_at_column()
+        RETURNS TRIGGER AS $$
+        BEGIN
+            NEW.updated_at = NOW();
+            RETURN NEW;
+        END;
+        $$ language 'plpgsql';
 
-      DROP TRIGGER IF EXISTS update_flights_updated_at ON flights;
-      CREATE TRIGGER update_flights_updated_at 
-        BEFORE UPDATE ON flights 
-        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+        DROP TRIGGER IF EXISTS update_flights_updated_at ON flights;
+        CREATE TRIGGER update_flights_updated_at 
+          BEFORE UPDATE ON flights 
+          FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
-      DROP TRIGGER IF EXISTS update_users_updated_at ON users;
-      CREATE TRIGGER update_users_updated_at 
-        BEFORE UPDATE ON users 
-        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-    `;
-    
-    await pool.query(triggerQuery);
-    console.log('Database triggers created.');
+        DROP TRIGGER IF EXISTS update_users_updated_at ON users;
+        CREATE TRIGGER update_users_updated_at 
+          BEFORE UPDATE ON users 
+          FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+      `;
+      
+      await pool.query(triggerQuery);
+      console.log('Database triggers ready.');
+    } catch (err) {
+      console.warn('Trigger creation warning:', err.message);
+    }
+
+    console.log('=== DATABASE MIGRATION COMPLETED SUCCESSFULLY ===');
 
   } catch (err) {
-    console.error('Error connecting to database or creating tables:', err);
+    console.error('Error in database setup:', err);
+    throw err;
   }
 };
 
