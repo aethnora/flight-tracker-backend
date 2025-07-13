@@ -43,6 +43,32 @@ const createTables = async () => {
     await pool.query(userTableQuery);
     console.log('Enhanced users table ready.');
 
+    // Add missing columns to existing users table
+    const userColumnsToAdd = {
+      'total_flights': 'INTEGER DEFAULT 0',
+      'last_activity': 'TIMESTAMP DEFAULT NOW()', 
+      'updated_at': 'TIMESTAMP DEFAULT NOW()'
+    };
+
+    const existingUserColumns = await pool.query(`
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_name = 'users';
+    `);
+    
+    const userColumnNames = existingUserColumns.rows.map(row => row.column_name);
+    
+    for (const [columnName, columnType] of Object.entries(userColumnsToAdd)) {
+      if (!userColumnNames.includes(columnName)) {
+        try {
+          await pool.query(`ALTER TABLE users ADD COLUMN ${columnName} ${columnType};`);
+          console.log(`Added user column: ${columnName}`);
+        } catch (err) {
+          console.warn(`Failed to add user column ${columnName}:`, err.message);
+        }
+      }
+    }
+
     // Check existing flights table structure
     const tableExistsQuery = `
       SELECT EXISTS (
