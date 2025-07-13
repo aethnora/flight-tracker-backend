@@ -33,12 +33,8 @@ const createTables = async () => {
         user_id VARCHAR(255) PRIMARY KEY,
         email VARCHAR(255) NOT NULL UNIQUE,
         subscription_plan VARCHAR(50) DEFAULT 'free',
-        
-        -- Usage tracking
         total_flights INTEGER DEFAULT 0,
         last_activity TIMESTAMP DEFAULT NOW(),
-        
-        -- Timestamps
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
       );
@@ -93,61 +89,50 @@ const createTables = async () => {
       console.log('Creating new flights table with enhanced schema...');
     }
 
-    // Create comprehensive flights table
+    // Create comprehensive flights table with correct syntax
     const flightTableQuery = `
       CREATE TABLE IF NOT EXISTS flights (
         flight_id SERIAL PRIMARY KEY,
         user_id VARCHAR(255) REFERENCES users(user_id),
         
-        -- Basic booking information
         booking_reference VARCHAR(50) NOT NULL,
         booking_hash VARCHAR(50) UNIQUE,
         airline VARCHAR(100),
         
-        -- Route information
         departure_airport VARCHAR(10),
         arrival_airport VARCHAR(10),
-        route_text TEXT, -- Store original route text like "RSW/ORD"
+        route_text TEXT,
         
-        -- Enhanced timing information
         departure_date VARCHAR(50),
         departure_time VARCHAR(50),
         arrival_date VARCHAR(50),
         arrival_time VARCHAR(50),
         
-        -- Multi-segment support
-        all_dates JSONB, -- Store array of all dates for round trips
-        all_times JSONB, -- Store array of all times
+        all_dates JSONB,
+        all_times JSONB,
         
-        -- Flight details
         flight_number VARCHAR(20),
-        aircraft VARCHAR(100), -- Aircraft type
-        service_class VARCHAR(50), -- First, Business, Premium Economy, Economy, Basic Economy
+        aircraft VARCHAR(100),
+        service_class VARCHAR(50),
         
-        -- Pricing information
         total_price NUMERIC(10, 2),
         total_price_text VARCHAR(100),
         currency VARCHAR(10) DEFAULT 'USD',
         
-        -- Price monitoring
         original_price NUMERIC(10, 2),
         last_checked_price NUMERIC(10, 2),
         lowest_price_seen NUMERIC(10, 2),
         
-        -- Additional information
-        passenger_info TEXT, -- Store passenger count and details
+        passenger_info TEXT,
         booking_url TEXT,
         scraped_at TIMESTAMP DEFAULT NOW(),
         
-        -- Monitoring metadata
         is_active BOOLEAN DEFAULT TRUE,
         last_checked_at TIMESTAMP DEFAULT NOW(),
         
-        -- Timestamps
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW(),
         
-        -- Legacy compatibility
         departure_date_time TIMESTAMP,
         arrival_date_time TIMESTAMP,
         departure_date_legacy TIMESTAMP,
@@ -157,18 +142,41 @@ const createTables = async () => {
         price_alert_sent BOOLEAN DEFAULT FALSE,
         passenger_count INTEGER DEFAULT 1,
         check_frequency_hours INTEGER DEFAULT 24,
-        next_check_at TIMESTAMP DEFAULT NOW() + INTERVAL '24 hours',
-        
-        -- Enhanced constraints for duplicate prevention
-        CONSTRAINT unique_booking_per_user UNIQUE(user_id, booking_hash),
-        CONSTRAINT unique_booking_details UNIQUE(user_id, booking_reference, departure_airport, arrival_airport, departure_date)
+        next_check_at TIMESTAMP DEFAULT NOW() + INTERVAL '24 hours'
       );
     `;
 
     await pool.query(flightTableQuery);
     console.log('Enhanced flights table ready.');
 
-    // Create price history table
+    // Add constraints separately (safer approach)
+    try {
+      await pool.query(`
+        ALTER TABLE flights 
+        ADD CONSTRAINT unique_booking_per_user 
+        UNIQUE(user_id, booking_hash);
+      `);
+      console.log('Added booking hash constraint.');
+    } catch (err) {
+      if (!err.message.includes('already exists')) {
+        console.warn('Booking hash constraint warning:', err.message);
+      }
+    }
+
+    try {
+      await pool.query(`
+        ALTER TABLE flights 
+        ADD CONSTRAINT unique_booking_details 
+        UNIQUE(user_id, booking_reference, departure_airport, arrival_airport, departure_date);
+      `);
+      console.log('Added booking details constraint.');
+    } catch (err) {
+      if (!err.message.includes('already exists')) {
+        console.warn('Booking details constraint warning:', err.message);
+      }
+    }
+
+    // Create price history table with correct syntax
     const priceHistoryTableQuery = `
       CREATE TABLE IF NOT EXISTS price_history (
         history_id SERIAL PRIMARY KEY,
@@ -177,14 +185,9 @@ const createTables = async () => {
         currency VARCHAR(10) DEFAULT 'USD',
         source VARCHAR(100),
         checked_at TIMESTAMP DEFAULT NOW(),
-        
-        -- Enhanced tracking
         availability_status VARCHAR(50),
         fare_class VARCHAR(50),
-        notes TEXT,
-        
-        -- Index for fast queries
-        INDEX (flight_id, checked_at)
+        notes TEXT
       );
     `;
 
@@ -208,40 +211,23 @@ const createTables = async () => {
     await pool.query(alertsTableQuery);
     console.log('Price alerts table ready.');
 
-    // Create comprehensive indexes for performance at scale
+    // Create performance indexes separately
     const indexes = [
-      // User-based queries
       'CREATE INDEX IF NOT EXISTS idx_flights_user_id_active ON flights(user_id) WHERE is_active = true;',
       'CREATE INDEX IF NOT EXISTS idx_flights_user_created ON flights(user_id, created_at DESC);',
-      
-      // Duplicate prevention
       'CREATE INDEX IF NOT EXISTS idx_flights_booking_hash ON flights(booking_hash) WHERE booking_hash IS NOT NULL;',
       'CREATE INDEX IF NOT EXISTS idx_flights_booking_ref_user ON flights(user_id, booking_reference);',
-      
-      // Search and filtering
       'CREATE INDEX IF NOT EXISTS idx_flights_route ON flights(departure_airport, arrival_airport);',
       'CREATE INDEX IF NOT EXISTS idx_flights_airline ON flights(airline);',
       'CREATE INDEX IF NOT EXISTS idx_flights_created_at ON flights(created_at DESC);',
       'CREATE INDEX IF NOT EXISTS idx_flights_departure_date ON flights(departure_date);',
-      
-      // Service class analytics
       'CREATE INDEX IF NOT EXISTS idx_flights_service_class ON flights(service_class) WHERE service_class IS NOT NULL;',
-      
-      // Price monitoring
       'CREATE INDEX IF NOT EXISTS idx_flights_price_monitoring ON flights(next_check_at) WHERE is_active = true;',
       'CREATE INDEX IF NOT EXISTS idx_flights_price_range ON flights(total_price) WHERE total_price IS NOT NULL;',
-      
-      // User analytics
       'CREATE INDEX IF NOT EXISTS idx_users_activity ON users(last_activity DESC);',
       'CREATE INDEX IF NOT EXISTS idx_users_subscription ON users(subscription_plan);',
-      
-      // Price history performance
       'CREATE INDEX IF NOT EXISTS idx_price_history_flight_time ON price_history(flight_id, checked_at DESC);',
-      'CREATE INDEX IF NOT EXISTS idx_price_history_recent ON price_history(checked_at DESC) WHERE checked_at > NOW() - INTERVAL \'30 days\';',
-      
-      // JSON indexes for multi-segment data
-      'CREATE INDEX IF NOT EXISTS idx_flights_all_dates_gin ON flights USING gin(all_dates) WHERE all_dates IS NOT NULL;',
-      'CREATE INDEX IF NOT EXISTS idx_flights_all_times_gin ON flights USING gin(all_times) WHERE all_times IS NOT NULL;'
+      'CREATE INDEX IF NOT EXISTS idx_price_history_recent ON price_history(checked_at DESC);'
     ];
 
     console.log('Creating performance indexes...');
@@ -252,55 +238,32 @@ const createTables = async () => {
         indexCount++;
       } catch (err) {
         if (!err.message.includes('already exists')) {
-          console.warn('Index creation warning:', err.message);
+          console.warn('Index warning:', err.message);
         }
       }
     }
     console.log(`Created ${indexCount} performance indexes.`);
 
-    // Add triggers for user statistics
-    try {
-      await pool.query(`
-        CREATE OR REPLACE FUNCTION update_user_stats()
-        RETURNS TRIGGER AS $$
-        BEGIN
-          IF TG_OP = 'INSERT' THEN
-            UPDATE users 
-            SET 
-              total_flights = total_flights + 1,
-              last_activity = NOW(),
-              updated_at = NOW()
-            WHERE user_id = NEW.user_id;
-            RETURN NEW;
-          ELSIF TG_OP = 'DELETE' THEN
-            UPDATE users 
-            SET 
-              total_flights = GREATEST(total_flights - 1, 0),
-              updated_at = NOW()
-            WHERE user_id = OLD.user_id;
-            RETURN OLD;
-          END IF;
-          RETURN NULL;
-        END;
-        $$ LANGUAGE plpgsql;
+    // Create JSONB indexes separately (these need special syntax)
+    const jsonIndexes = [
+      'CREATE INDEX IF NOT EXISTS idx_flights_all_dates_gin ON flights USING gin(all_dates) WHERE all_dates IS NOT NULL;',
+      'CREATE INDEX IF NOT EXISTS idx_flights_all_times_gin ON flights USING gin(all_times) WHERE all_times IS NOT NULL;'
+    ];
 
-        DROP TRIGGER IF EXISTS trigger_update_user_stats ON flights;
-        CREATE TRIGGER trigger_update_user_stats
-          AFTER INSERT OR DELETE ON flights
-          FOR EACH ROW EXECUTE FUNCTION update_user_stats();
-      `);
-      console.log('User statistics triggers created.');
-    } catch (err) {
-      console.warn('Trigger creation warning (non-critical):', err.message);
+    for (const indexQuery of jsonIndexes) {
+      try {
+        await pool.query(indexQuery);
+        console.log('Created JSONB index');
+      } catch (err) {
+        if (!err.message.includes('already exists')) {
+          console.warn('JSONB index warning:', err.message);
+        }
+      }
     }
 
     // Verify final table structure
     const finalCheck = await pool.query(`
-      SELECT 
-        column_name, 
-        data_type,
-        is_nullable,
-        column_default
+      SELECT column_name, data_type
       FROM information_schema.columns 
       WHERE table_name = 'flights' 
       ORDER BY ordinal_position;
@@ -323,30 +286,11 @@ const createTables = async () => {
       console.log('Missing columns:', missing);
     }
 
-    // Database statistics
-    const stats = await pool.query(`
-      SELECT 
-        schemaname,
-        tablename,
-        attname as column_name,
-        n_distinct,
-        correlation
-      FROM pg_stats 
-      WHERE tablename = 'flights' 
-      ORDER BY tablename, attname
-      LIMIT 5;
-    `);
-    
-    if (stats.rows.length > 0) {
-      console.log('Database optimization statistics available.');
-    }
-
     console.log('\n=== DATABASE SETUP COMPLETED SUCCESSFULLY ===');
     console.log('✅ Enhanced schema ready for thousands of users');
     console.log('✅ Comprehensive duplicate prevention');
     console.log('✅ Performance indexes optimized');
     console.log('✅ Complete flight data capture enabled');
-    console.log('✅ User analytics and monitoring ready');
 
   } catch (err) {
     console.error('Error in enhanced database setup:', err);
