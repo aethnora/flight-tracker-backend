@@ -27,12 +27,14 @@ const createTables = async () => {
     await Promise.race([testQuery, timeoutPromise]);
     console.log('Database connection successful.');
 
-    // Create users table with enhanced fields
+    // Create users table with enhanced fields for new features
     const userTableQuery = `
       CREATE TABLE IF NOT EXISTS users (
         user_id VARCHAR(255) PRIMARY KEY,
         email VARCHAR(255) NOT NULL UNIQUE,
         subscription_plan VARCHAR(50) DEFAULT 'free',
+        stripe_customer_id VARCHAR(255) UNIQUE, -- New: For Stripe integration
+        lifetime_savings NUMERIC(10, 2) DEFAULT 0.00, -- New: For lifetime savings counter
         total_flights INTEGER DEFAULT 0,
         last_activity TIMESTAMP DEFAULT NOW(),
         created_at TIMESTAMP DEFAULT NOW(),
@@ -43,11 +45,13 @@ const createTables = async () => {
     await pool.query(userTableQuery);
     console.log('Enhanced users table ready.');
 
-    // Add missing columns to existing users table
+    // Add missing columns to existing users table if they don't exist
     const userColumnsToAdd = {
       'total_flights': 'INTEGER DEFAULT 0',
       'last_activity': 'TIMESTAMP DEFAULT NOW()', 
-      'updated_at': 'TIMESTAMP DEFAULT NOW()'
+      'updated_at': 'TIMESTAMP DEFAULT NOW()',
+      'stripe_customer_id': 'VARCHAR(255) UNIQUE', // New
+      'lifetime_savings': 'NUMERIC(10, 2) DEFAULT 0.00' // New
     };
 
     const existingUserColumns = await pool.query(`
@@ -92,13 +96,15 @@ const createTables = async () => {
       
       console.log('Existing flights table has', existingColumns.length, 'columns');
       
-      // Add missing columns for enhanced data
+      // Add missing columns for enhanced data and new alert logic
       const newColumns = {
         'route_text': 'TEXT',
         'all_dates': 'JSONB',
         'all_times': 'JSONB', 
         'aircraft': 'VARCHAR(100)',
-        'passenger_info': 'TEXT'
+        'passenger_info': 'TEXT',
+        'current_price': 'NUMERIC(10, 2)', // New: For displaying current price
+        'last_alerted_price': 'NUMERIC(10, 2)' // New: For advanced alert logic
       };
       
       for (const [columnName, columnType] of Object.entries(newColumns)) {
@@ -115,7 +121,7 @@ const createTables = async () => {
       console.log('Creating new flights table with enhanced schema...');
     }
 
-    // Create comprehensive flights table with correct syntax
+    // Create comprehensive flights table with correct syntax and new columns
     const flightTableQuery = `
       CREATE TABLE IF NOT EXISTS flights (
         flight_id SERIAL PRIMARY KEY,
@@ -147,6 +153,8 @@ const createTables = async () => {
         
         original_price NUMERIC(10, 2),
         last_checked_price NUMERIC(10, 2),
+        current_price NUMERIC(10, 2), -- New: For displaying current price
+        last_alerted_price NUMERIC(10, 2), -- New: For advanced alert logic
         lowest_price_seen NUMERIC(10, 2),
         
         passenger_info TEXT,
@@ -252,6 +260,7 @@ const createTables = async () => {
       'CREATE INDEX IF NOT EXISTS idx_flights_price_range ON flights(total_price) WHERE total_price IS NOT NULL;',
       'CREATE INDEX IF NOT EXISTS idx_users_activity ON users(last_activity DESC);',
       'CREATE INDEX IF NOT EXISTS idx_users_subscription ON users(subscription_plan);',
+      'CREATE INDEX IF NOT EXISTS idx_users_stripe_customer_id ON users(stripe_customer_id) WHERE stripe_customer_id IS NOT NULL;', // New index
       'CREATE INDEX IF NOT EXISTS idx_price_history_flight_time ON price_history(flight_id, checked_at DESC);',
       'CREATE INDEX IF NOT EXISTS idx_price_history_recent ON price_history(checked_at DESC);'
     ];
@@ -298,7 +307,8 @@ const createTables = async () => {
     console.log('\n=== ENHANCED FLIGHTS TABLE STRUCTURE ===');
     const essentialColumns = [
       'booking_reference', 'total_price', 'departure_airport', 'arrival_airport',
-      'service_class', 'flight_number', 'all_dates', 'all_times', 'route_text'
+      'service_class', 'flight_number', 'all_dates', 'all_times', 'route_text',
+      'current_price', 'last_alerted_price' // Verify new columns
     ];
     
     const presentColumns = finalCheck.rows.map(row => row.column_name);
