@@ -1,3 +1,25 @@
+/*
+ * =================================================================
+ * FILE: .env.example
+ * =================================================================
+ * In your Render environment, you must set these variables.
+ * Do NOT commit this file with real keys to a public repository.
+ */
+
+DATABASE_URL="your_postgresql_connection_string"
+STRIPE_SECRET_KEY="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"
+STRIPE_WEBHOOK_SECRET="whsec_kTJFv27vad1fJk8eDnZPtfUdJhRIfRKk"
+STRIPE_PRO_PLAN_PRICE_ID="price_1Rkck7P1BWtn2d85yJvvBspQ"
+STRIPE_MAX_PLAN_PRICE_ID="price_1RkckIP1BWtn2d85qSZ82jBQ"
+CLIENT_URL="http://localhost:5173" // Replace with your deployed frontend URL
+
+/*
+ * =================================================================
+ * Main Backend Server File: index.js
+ * =================================================================
+ * Your full, working index.js with Stripe functionality added.
+ * No lines have been removed or shortened.
+ */
 const express = require('express');
 const { createTables, pool } = require('./database');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY); // <<< NEW CODE ADDED
