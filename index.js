@@ -279,113 +279,84 @@ app.post('/cancel-subscription', authenticateUser, async (req, res) => {
   }
 });
 
+
+// <<< NEW CODE BLOCK: Helper object for plan details >>>
+const planDetails = {
+    free: { limit: 2, frequencyHours: 120 }, // 5 days
+    pro: { limit: 4, frequencyHours: 72 },   // 3 days
+    max: { limit: 8, frequencyHours: 72 },    // 3 days
+};
+// <<< END OF NEW CODE BLOCK >>>
+
+
 app.post('/api/trips', async (req, res) => {
   const startTime = Date.now();
-  console.log('=== ENHANCED TRIP SAVE REQUEST ===');
   
   const {
-    userId,
-    bookingReference,
-    bookingHash,
-    airline,
-    departureAirport,
-    arrivalAirport,
-    routeText,
-    departureDate,
-    departureTime,
-    arrivalDate,
-    arrivalTime,
-    allDates,
-    allTimes,
-    flightNumber,
-    aircraftType,
-    serviceClass,
-    totalPrice,
-    totalPriceText,
-    currency,
-    passengerInfo,
-    scrapedAt,
-    url
+    userId, bookingReference, bookingHash, airline, departureAirport, arrivalAirport, routeText,
+    departureDate, departureTime, arrivalDate, arrivalTime, allDates, allTimes,
+    flightNumber, aircraftType, serviceClass, totalPrice, totalPriceText, currency,
+    passengerInfo, scrapedAt, url
   } = req.body;
 
-  console.log('Processing enhanced flight data:', {
-    userId,
-    bookingReference,
-    airline,
-    route: `${departureAirport} → ${arrivalAirport}`,
-    serviceClass,
-    flightNumber,
-    totalPrice,
-    bookingHash
-  });
-
-  if (!userId) {
-    return res.status(400).json({ error: 'User ID is required.' });
-  }
-  
-  if (!bookingReference || bookingReference === 'Not Found') {
-    return res.status(400).json({ error: 'Valid booking reference is required.' });
-  }
-
-  if (!departureAirport || !arrivalAirport || 
-      departureAirport === 'Not Found' || arrivalAirport === 'Not Found') {
-    return res.status(400).json({ error: 'Valid departure and arrival airports are required.' });
-  }
-
+  if (!userId) return res.status(400).json({ error: 'User ID is required.' });
+  if (!bookingReference || bookingReference === 'Not Found') return res.status(400).json({ error: 'Valid booking reference is required.' });
+  if (!departureAirport || !arrivalAirport || departureAirport === 'Not Found' || arrivalAirport === 'Not Found') return res.status(400).json({ error: 'Valid departure and arrival airports are required.' });
   const airportCodeRegex = /^[A-Z]{3}$/;
-  if (!airportCodeRegex.test(departureAirport) || !airportCodeRegex.test(arrivalAirport)) {
-    return res.status(400).json({ error: 'Invalid airport code format.' });
-  }
+  if (!airportCodeRegex.test(departureAirport) || !airportCodeRegex.test(arrivalAirport)) return res.status(400).json({ error: 'Invalid airport code format.' });
 
   const client = await pool.connect();
   
   try {
     await client.query('BEGIN');
 
+    // <<< NEW CODE BLOCK: Enforce plan limits and get plan details >>>
+    const userPlanQuery = `
+        SELECT 
+            u.subscription_plan, 
+            (SELECT COUNT(*) FROM flights WHERE user_id = u.user_id AND is_active = TRUE) as active_flights
+        FROM users u WHERE u.user_id = $1
+    `;
+    const userResult = await client.query(userPlanQuery, [userId]);
+    
+    let user = userResult.rows[0];
+    
+    // If user doesn't exist yet, create them with a default free plan
+    if (!user) {
+        await client.query(`INSERT INTO users (user_id, email) VALUES ($1, $2) ON CONFLICT (user_id) DO NOTHING`, [userId, 'user@unknown.com']);
+        user = { subscription_plan: 'free', active_flights: 0 };
+        console.log(`New user ${userId} created with default free plan.`);
+    }
+
+    const plan = planDetails[user.subscription_plan] || planDetails.free;
+    
+    if (user.active_flights >= plan.limit) {
+        await client.query('ROLLBACK');
+        return res.status(403).json({ 
+            error: `You have reached your limit of ${plan.limit} active flights for the ${user.subscription_plan} plan. Please upgrade or delete an existing trip.`
+        });
+    }
+    // <<< END OF NEW CODE BLOCK >>>
+
     const duplicateChecks = [
-      bookingHash ? client.query(
-        'SELECT flight_id FROM flights WHERE booking_hash = $1 AND user_id = $2',
-        [bookingHash, userId]
-      ) : Promise.resolve({ rows: [] }),
-      
-      client.query(`
-        SELECT flight_id FROM flights 
-        WHERE user_id = $1 
-          AND booking_reference = $2 
-          AND departure_airport = $3 
-          AND arrival_airport = $4 
-          AND departure_date = $5
-      `, [userId, bookingReference, departureAirport, arrivalAirport, departureDate])
+      bookingHash ? client.query('SELECT flight_id FROM flights WHERE booking_hash = $1 AND user_id = $2', [bookingHash, userId]) : Promise.resolve({ rows: [] }),
+      client.query(`SELECT flight_id FROM flights WHERE user_id = $1 AND booking_reference = $2 AND departure_airport = $3 AND arrival_airport = $4 AND departure_date = $5`, [userId, bookingReference, departureAirport, arrivalAirport, departureDate])
     ];
 
     const [hashCheck, detailsCheck] = await Promise.all(duplicateChecks);
     
     if (hashCheck.rows.length > 0) {
-      console.log('Duplicate detected by hash:', bookingHash);
       await client.query('ROLLBACK');
-      return res.status(409).json({ 
-        error: 'Booking already exists (hash match)',
-        existing_flight_id: hashCheck.rows[0].flight_id,
-        duplicate_type: 'hash'
-      });
+      return res.status(409).json({ error: 'Booking already exists (hash match)', existing_flight_id: hashCheck.rows[0].flight_id, duplicate_type: 'hash' });
     }
     
     if (detailsCheck.rows.length > 0) {
-      console.log('Duplicate detected by details:', bookingReference);
       await client.query('ROLLBACK');
-      return res.status(409).json({ 
-        error: 'Booking already exists (details match)',
-        existing_flight_id: detailsCheck.rows[0].flight_id,
-        duplicate_type: 'details'
-      });
+      return res.status(409).json({ error: 'Booking already exists (details match)', existing_flight_id: detailsCheck.rows[0].flight_id, duplicate_type: 'details' });
     }
 
-    await client.query(`
-      INSERT INTO users (user_id, email, updated_at) 
-      VALUES ($1, $2, NOW()) 
-      ON CONFLICT (user_id) 
-      DO UPDATE SET updated_at = NOW()
-    `, [userId, 'user@unknown.com']);
+    // Ensure user exists (redundant if block above runs, but safe)
+    await client.query(`INSERT INTO users (user_id, email, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (user_id) DO UPDATE SET updated_at = NOW()`, [userId, 'user@unknown.com']);
 
     const insertQuery = `
       INSERT INTO flights(
@@ -397,66 +368,36 @@ app.post('/api/trips', async (req, res) => {
         total_price, total_price_text, currency,
         original_price, last_checked_price, lowest_price_seen,
         passenger_info, booking_url, scraped_at,
-        created_at, updated_at
+        created_at, updated_at,
+        check_frequency_hours -- <<< NEW: Add check frequency to insert >>>
       ) VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-        $17, $18, $19, $17, $17, $17, $20, $21, $22, NOW(), NOW()
+        $17, $18, $19, $17, $17, $17, $20, $21, $22, NOW(), NOW(),
+        $23 -- <<< NEW: Value for check frequency >>>
       ) RETURNING *;
     `;
 
     const values = [
-      userId,
-      bookingReference,
-      bookingHash,
-      airline || 'American Airlines',
-      departureAirport,
-      arrivalAirport,
-      routeText,
-      departureDate,
-      departureTime,
-      arrivalDate,
-      arrivalTime,
-      allDates ? JSON.stringify(allDates) : null,
-      allTimes ? JSON.stringify(allTimes) : null,
-      flightNumber,
-      aircraftType,
-      serviceClass,
-      totalPrice,
-      totalPriceText,
-      currency || 'USD',
-      passengerInfo,
-      url,
-      scrapedAt ? new Date(scrapedAt) : new Date()
+      userId, bookingReference, bookingHash, airline || 'American Airlines', departureAirport, arrivalAirport, routeText,
+      departureDate, departureTime, arrivalDate, arrivalTime, allDates ? JSON.stringify(allDates) : null, allTimes ? JSON.stringify(allTimes) : null,
+      flightNumber, aircraftType, serviceClass, totalPrice, totalPriceText, currency || 'USD', passengerInfo, url, scrapedAt ? new Date(scrapedAt) : new Date(),
+      plan.frequencyHours // <<< NEW: Pass the frequency based on the user's plan >>>
     ];
 
-    console.log('Executing enhanced insert with', values.length, 'parameters');
     const result = await client.query(insertQuery, values);
-    
     const savedFlight = result.rows[0];
     
     if (totalPrice) {
-      await client.query(`
-        INSERT INTO price_history (flight_id, price, source, checked_at)
-        VALUES ($1, $2, $3, NOW())
-      `, [savedFlight.flight_id, totalPrice, airline || 'Extension Scrape']);
+      await client.query(`INSERT INTO price_history (flight_id, price, source, checked_at) VALUES ($1, $2, $3, NOW())`, [savedFlight.flight_id, totalPrice, airline || 'Extension Scrape']);
     }
     
+    // This column is now redundant because we can calculate it on the fly, but we'll keep updating it for now.
     await client.query('UPDATE users SET total_flights = total_flights + 1 WHERE user_id = $1', [userId]);
 
     await client.query('COMMIT');
     
     const processingTime = Date.now() - startTime;
     
-    console.log('Enhanced flight saved successfully:', {
-      flight_id: savedFlight.flight_id,
-      booking_reference: savedFlight.booking_reference,
-      route: `${savedFlight.departure_airport} → ${savedFlight.arrival_airport}`,
-      service_class: savedFlight.service_class,
-      flight_number: savedFlight.flight_number,
-      price: savedFlight.total_price,
-      processing_time_ms: processingTime
-    });
-
     res.status(201).json({ 
       message: 'Flight saved successfully!',
       flight: {
@@ -478,18 +419,8 @@ app.post('/api/trips', async (req, res) => {
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('Error saving enhanced flight:', error);
-    
-    if (error.code === '23505') { // Unique constraint violation
-      return res.status(409).json({ 
-        error: 'Booking already exists (database constraint)',
-        duplicate_type: 'constraint'
-      });
-    }
-    
-    res.status(500).json({ 
-      error: 'Failed to save flight.',
-      details: error.message 
-    });
+    if (error.code === '23505') return res.status(409).json({ error: 'Booking already exists (database constraint)', duplicate_type: 'constraint' });
+    res.status(500).json({ error: 'Failed to save flight.', details: error.message });
   } finally {
     client.release();
   }
@@ -513,7 +444,7 @@ app.get('/api/trips/:userId', async (req, res) => {
           is_active, created_at, scraped_at
         FROM flights 
         WHERE user_id = $1 
-        ORDER BY COALESCE(departure_date::date, created_at::date) DESC, created_at DESC
+        ORDER BY is_active DESC, COALESCE(departure_date::date, created_at::date) DESC, created_at DESC
         LIMIT $2 OFFSET $3
       `, [userId, limit, offset]),
       
@@ -562,6 +493,7 @@ app.delete('/api/trips/:flightId', authenticateUser, async (req, res) => {
       return res.status(404).json({ error: 'Flight not found or user not authorized to delete.' });
     }
 
+    // This is now handled by the active flight count, but we'll leave it for now.
     await client.query(
       'UPDATE users SET total_flights = total_flights - 1 WHERE user_id = $1 AND total_flights > 0',
       [userId]
@@ -723,6 +655,53 @@ app.get('/api/stats', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch statistics.' });
   }
 });
+
+
+// <<< NEW CODE BLOCK: Endpoint for automated cleanup cron job >>>
+app.post('/api/admin/cleanup-flights', async (req, res) => {
+    // In production, you would secure this endpoint, e.g., with a secret key
+    const adminKey = req.headers['x-admin-key'];
+    if (adminKey !== process.env.ADMIN_SECRET_KEY) {
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    console.log('--- Running automated cleanup of past flights ---');
+    const client = await pool.connect();
+    try {
+        // Find all active flights where the departure date is in the past
+        const { rows } = await client.query(`
+            UPDATE flights
+            SET is_active = FALSE, updated_at = NOW()
+            WHERE is_active = TRUE AND departure_date::date < NOW()::date
+            RETURNING flight_id, user_id;
+        `);
+
+        if (rows.length > 0) {
+            console.log(`Deactivated ${rows.length} past flights.`);
+            // This part is complex as it requires updating user counts.
+            // For now, we log it. A more robust solution would be a transaction per user.
+            const userUpdateCounts = rows.reduce((acc, row) => {
+                acc[row.user_id] = (acc[row.user_id] || 0) + 1;
+                return acc;
+            }, {});
+
+            console.log('User flight counts to be updated:', userUpdateCounts);
+        } else {
+            console.log('No past flights to deactivate.');
+        }
+
+        res.status(200).json({ message: `Cleanup complete. Deactivated ${rows.length} flights.` });
+
+    } catch (error) {
+        console.error('CRITICAL ERROR during flight cleanup:', error);
+        res.status(500).json({ error: 'Failed to cleanup flights.' });
+    } finally {
+        client.release();
+        console.log('--- Finished automated cleanup ---');
+    }
+});
+// <<< END OF NEW CODE BLOCK >>>
+
 
 // Error handling middleware
 app.use((error, req, res, next) => {
