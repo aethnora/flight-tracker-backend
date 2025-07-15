@@ -68,6 +68,26 @@ app.post('/stripe-webhook', express.raw({type: 'application/json'}), async (req,
     }
   }
 
+  // <<< ADDITION: HANDLE SUBSCRIPTION CANCELLATION WEBHOOK >>>
+  // Handle subscription deletion
+  if (event.type === 'customer.subscription.deleted') {
+    const subscription = event.data.object;
+    const stripeCustomerId = subscription.customer;
+
+    console.log(`Subscription deleted for customer ${stripeCustomerId}. Reverting to free plan.`);
+    
+    try {
+      await pool.query(
+        `UPDATE users SET subscription_plan = 'free', updated_at = NOW() WHERE stripe_customer_id = $1`,
+        [stripeCustomerId]
+      );
+      console.log(`   -> User with Stripe ID ${stripeCustomerId} reverted to free plan.`);
+    } catch (dbError) {
+      console.error(`🚨 Failed to update user plan after subscription cancellation for Stripe ID ${stripeCustomerId}`, dbError);
+    }
+  }
+  // <<< END OF ADDITION >>>
+
   res.status(200).json({ received: true });
 });
 // <<< NEW CODE BLOCK ENDS HERE >>>
@@ -190,14 +210,84 @@ app.post('/create-checkout-session', async (req, res) => {
             line_items: [{ price: priceId, quantity: 1 }],
             mode: 'subscription',
             client_reference_id: userId, // Pass the user's ID to the session
-            success_url: `${process.env.CLIENT_URL}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-            cancel_url: `${process.env.CLIENT_URL}/`,
+            success_url: `${process.env.CLIENT_URL}/dashboard?payment=success`,
+            cancel_url: `${process.env.CLIENT_URL}/pricing`,
         });
         res.json({ url: session.url });
     } catch (error) {
         console.error('Error creating Stripe checkout session:', error);
         res.status(500).json({ error: 'Failed to create checkout session.' });
     }
+});
+// <<< NEW CODE BLOCK ENDS HERE >>>
+
+// <<< NEW CODE BLOCK STARTS HERE: ACCOUNT MANAGEMENT ENDPOINTS >>>
+const authenticateUser = (req, res, next) => {
+  // This is a placeholder. In production, you would use Firebase Admin SDK
+  // to verify the Bearer token from the Authorization header.
+  console.log('Bypassing authentication for development. DO NOT use in production.');
+  next();
+};
+
+app.get('/api/user/me/:userId', authenticateUser, async (req, res) => {
+  const { userId } = req.params;
+  if (!userId) return res.status(400).json({ error: 'User ID is required.' });
+
+  try {
+    const userQuery = 'SELECT user_id, email, subscription_plan, lifetime_savings, stripe_customer_id FROM users WHERE user_id = $1';
+    const flightCountQuery = 'SELECT COUNT(*) as active_flights FROM flights WHERE user_id = $1 AND is_active = TRUE';
+
+    const [userResult, flightCountResult] = await Promise.all([
+      pool.query(userQuery, [userId]),
+      pool.query(flightCountQuery, [userId])
+    ]);
+
+    if (userResult.rows.length === 0) return res.status(404).json({ error: 'User not found.' });
+
+    res.json({ ...userResult.rows[0], active_flights: parseInt(flightCountResult.rows[0].active_flights, 10) });
+  } catch (error) {
+    console.error(`Error fetching user data for ${userId}:`, error);
+    res.status(500).json({ error: 'Failed to fetch user data.' });
+  }
+});
+
+app.post('/create-customer-portal-session', authenticateUser, async (req, res) => {
+  const { userId } = req.body;
+  if (!userId) return res.status(400).json({ error: 'userId is required.' });
+
+  try {
+    const { rows } = await pool.query('SELECT stripe_customer_id FROM users WHERE user_id = $1', [userId]);
+    if (rows.length === 0 || !rows[0].stripe_customer_id) {
+      return res.status(404).json({ error: 'Stripe customer not found for this user.' });
+    }
+    const portalSession = await stripe.billingPortal.sessions.create({
+      customer: rows[0].stripe_customer_id,
+      return_url: `${process.env.CLIENT_URL}/account`,
+    });
+    res.json({ url: portalSession.url });
+  } catch (error) {
+    console.error('Error creating Stripe customer portal session:', error);
+    res.status(500).json({ error: 'Failed to create customer portal session.' });
+  }
+});
+
+app.post('/cancel-subscription', authenticateUser, async (req, res) => {
+  const { userId } = req.body;
+  if (!userId) return res.status(400).json({ error: 'userId is required.' });
+
+  try {
+    const { rows } = await pool.query('SELECT stripe_customer_id FROM users WHERE user_id = $1', [userId]);
+    if (rows.length === 0 || !rows[0].stripe_customer_id) return res.status(404).json({ error: 'Stripe customer not found.' });
+    
+    const subscriptions = await stripe.subscriptions.list({ customer: rows[0].stripe_customer_id, status: 'active', limit: 1 });
+    if (subscriptions.data.length === 0) return res.status(400).json({ error: 'No active subscription found to cancel.' });
+    
+    await stripe.subscriptions.cancel(subscriptions.data[0].id);
+    res.json({ message: 'Subscription cancelled successfully. Your plan will be updated shortly.' });
+  } catch (error) {
+    console.error('Error cancelling subscription:', error);
+    res.status(500).json({ error: 'Failed to cancel subscription.' });
+  }
 });
 // <<< NEW CODE BLOCK ENDS HERE >>>
 
@@ -389,6 +479,9 @@ app.post('/api/trips', async (req, res) => {
         VALUES ($1, $2, $3, NOW())
       `, [savedFlight.flight_id, totalPrice, airline || 'Extension Scrape']);
     }
+    
+    // <<< ADDITION: INCREMENT USER'S FLIGHT COUNT >>>
+    await client.query('UPDATE users SET total_flights = total_flights + 1 WHERE user_id = $1', [userId]);
 
     await client.query('COMMIT');
     
@@ -487,6 +580,52 @@ app.get('/api/trips/:userId', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch flights.' });
   }
 });
+
+
+// <<< NEW CODE BLOCK STARTS HERE: DELETE FLIGHT ENDPOINT >>>
+app.delete('/api/trips/:flightId', authenticateUser, async (req, res) => {
+  const { flightId } = req.params;
+  // This is insecure for production. In a real app, you would get the
+  // userId from the verified Firebase auth token, not the request body.
+  const { userId } = req.body; 
+
+  if (!userId) {
+    return res.status(400).json({ error: 'User ID is required in the request body.' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    
+    const deleteResult = await client.query(
+      'DELETE FROM flights WHERE flight_id = $1 AND user_id = $2 RETURNING user_id',
+      [flightId, userId]
+    );
+
+    if (deleteResult.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Flight not found or user not authorized to delete.' });
+    }
+
+    // Decrement the user's total_flights count
+    await client.query(
+      'UPDATE users SET total_flights = total_flights - 1 WHERE user_id = $1 AND total_flights > 0',
+      [userId]
+    );
+
+    await client.query('COMMIT');
+    res.status(200).json({ message: 'Flight deleted successfully.' });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error(`Error deleting flight ${flightId}:`, error);
+    res.status(500).json({ error: 'Failed to delete flight.' });
+  } finally {
+    client.release();
+  }
+});
+// <<< NEW CODE BLOCK ENDS HERE >>>
+
 
 // Enhanced endpoint to get all trips with filters and pagination
 app.get('/api/trips', async (req, res) => {
