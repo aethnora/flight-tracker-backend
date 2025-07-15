@@ -65,21 +65,34 @@ const getAccessToken = async () => {
 };
 
 /**
- * Fetches the lowest current price for a one-way flight.
+ * Fetches the lowest current price for a flight, supporting both one-way and round-trip.
  * This uses the Amadeus Flight Offers Price API, which is cost-effective.
  * @param {object} flightDetails - The details of the flight to check.
  * @param {string} flightDetails.departureAirport - IATA code (e.g., "JFK").
  * @param {string} flightDetails.arrivalAirport - IATA code (e.g., "LAX").
  * @param {string} flightDetails.departureDate - YYYY-MM-DD format.
+ * @param {string} [flightDetails.returnDate] - YYYY-MM-DD format for round-trip flights.
  * @param {string} flightDetails.airline - IATA code for the airline (e.g., "AA").
  * @returns {Promise<object|null>} An object with price details or null if not found.
  */
 const getFlightPrice = async (flightDetails) => {
-    const { departureAirport, arrivalAirport, departureDate, airline } = flightDetails;
+    // <<< MODIFIED CODE BLOCK: Destructure returnDate from flightDetails >>>
+    const { departureAirport, arrivalAirport, departureDate, returnDate, airline } = flightDetails;
 
     try {
         const accessToken = await getAccessToken();
-        const searchUrl = `${AMADEUS_API_BASE_URL}/v2/shopping/flight-offers?originLocationCode=${departureAirport}&destinationLocationCode=${arrivalAirport}&departureDate=${departureDate}&adults=1&nonStop=true&currencyCode=USD&max=1&includeAirlineCodes=${airline}`;
+        
+        // <<< MODIFIED CODE BLOCK: Dynamically build the search URL >>>
+        let searchUrl = `${AMADEUS_API_BASE_URL}/v2/shopping/flight-offers?originLocationCode=${departureAirport}&destinationLocationCode=${arrivalAirport}&departureDate=${departureDate}&adults=1&currencyCode=USD&max=1&includeAirlineCodes=${airline}`;
+
+        // If a returnDate is provided, add it to the query for a round-trip search
+        if (returnDate) {
+            searchUrl += `&returnDate=${returnDate}`;
+            console.log(`Performing ROUND-TRIP search for ${departureAirport} -> ${arrivalAirport} on ${departureDate} returning ${returnDate}`);
+        } else {
+            console.log(`Performing ONE-WAY search for ${departureAirport} -> ${arrivalAirport} on ${departureDate}`);
+        }
+        // The "&nonStop=true" parameter has been removed to support flights with connections.
 
         const response = await fetch(searchUrl, {
             method: 'GET',
