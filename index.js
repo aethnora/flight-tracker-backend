@@ -1,25 +1,17 @@
-
 const express = require('express');
+const cors = require('cors'); // <-- ADD THIS LINE
 const { createTables, pool } = require('./database');
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY); // <<< NEW CODE ADDED
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Enhanced CORS middleware
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
-  
-  if (req.method === 'OPTIONS') {
-    res.sendStatus(200);
-  } else {
-    next();
-  }
-});
+// <<< THIS IS THE FIX: Use the 'cors' middleware >>>
+// This properly handles all request types, including the preflight OPTIONS requests
+// that were causing the errors.
+app.use(cors());
+// <<< END OF FIX >>>
 
-// <<< NEW CODE BLOCK STARTS HERE >>>
 // This MUST come BEFORE app.use(express.json()) to work correctly.
 // It uses a raw body parser specifically for the Stripe webhook endpoint.
 app.post('/stripe-webhook', express.raw({type: 'application/json'}), async (req, res) => {
@@ -68,7 +60,6 @@ app.post('/stripe-webhook', express.raw({type: 'application/json'}), async (req,
     }
   }
 
-  // <<< ADDITION: HANDLE SUBSCRIPTION CANCELLATION WEBHOOK >>>
   // Handle subscription deletion
   if (event.type === 'customer.subscription.deleted') {
     const subscription = event.data.object;
@@ -86,11 +77,9 @@ app.post('/stripe-webhook', express.raw({type: 'application/json'}), async (req,
       console.error(`🚨 Failed to update user plan after subscription cancellation for Stripe ID ${stripeCustomerId}`, dbError);
     }
   }
-  // <<< END OF ADDITION >>>
 
   res.status(200).json({ received: true });
 });
-// <<< NEW CODE BLOCK ENDS HERE >>>
 
 // Enhanced JSON parsing with size limits
 app.use(express.json({ limit: '1mb' }));
@@ -196,7 +185,6 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
-// <<< NEW CODE BLOCK STARTS HERE >>>
 app.post('/create-checkout-session', async (req, res) => {
     const { priceId, userId } = req.body;
 
@@ -219,9 +207,7 @@ app.post('/create-checkout-session', async (req, res) => {
         res.status(500).json({ error: 'Failed to create checkout session.' });
     }
 });
-// <<< NEW CODE BLOCK ENDS HERE >>>
 
-// <<< NEW CODE BLOCK STARTS HERE: ACCOUNT MANAGEMENT ENDPOINTS >>>
 const authenticateUser = (req, res, next) => {
   // This is a placeholder. In production, you would use Firebase Admin SDK
   // to verify the Bearer token from the Authorization header.
@@ -289,9 +275,7 @@ app.post('/cancel-subscription', authenticateUser, async (req, res) => {
     res.status(500).json({ error: 'Failed to cancel subscription.' });
   }
 });
-// <<< NEW CODE BLOCK ENDS HERE >>>
 
-// Enhanced API endpoint with comprehensive duplicate prevention
 app.post('/api/trips', async (req, res) => {
   const startTime = Date.now();
   console.log('=== ENHANCED TRIP SAVE REQUEST ===');
@@ -304,26 +288,18 @@ app.post('/api/trips', async (req, res) => {
     departureAirport,
     arrivalAirport,
     routeText,
-    
-    // Enhanced timing information
     departureDate,
     departureTime,
     arrivalDate,
     arrivalTime,
     allDates,
     allTimes,
-    
-    // Enhanced flight details
     flightNumber,
     aircraftType,
     serviceClass,
-    
-    // Pricing information
     totalPrice,
     totalPriceText,
     currency,
-    
-    // Additional information
     passengerInfo,
     scrapedAt,
     url
@@ -340,7 +316,6 @@ app.post('/api/trips', async (req, res) => {
     bookingHash
   });
 
-  // Enhanced validation
   if (!userId) {
     return res.status(400).json({ error: 'User ID is required.' });
   }
@@ -354,7 +329,6 @@ app.post('/api/trips', async (req, res) => {
     return res.status(400).json({ error: 'Valid departure and arrival airports are required.' });
   }
 
-  // Validate airport codes
   const airportCodeRegex = /^[A-Z]{3}$/;
   if (!airportCodeRegex.test(departureAirport) || !airportCodeRegex.test(arrivalAirport)) {
     return res.status(400).json({ error: 'Invalid airport code format.' });
@@ -365,15 +339,12 @@ app.post('/api/trips', async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    // Enhanced duplicate checking - multiple strategies
     const duplicateChecks = [
-      // Check 1: Exact booking hash match
       bookingHash ? client.query(
         'SELECT flight_id FROM flights WHERE booking_hash = $1 AND user_id = $2',
         [bookingHash, userId]
       ) : Promise.resolve({ rows: [] }),
       
-      // Check 2: Same booking reference + route + date
       client.query(`
         SELECT flight_id FROM flights 
         WHERE user_id = $1 
@@ -406,7 +377,6 @@ app.post('/api/trips', async (req, res) => {
       });
     }
 
-    // Ensure user exists with upsert
     await client.query(`
       INSERT INTO users (user_id, email, updated_at) 
       VALUES ($1, $2, NOW()) 
@@ -414,7 +384,6 @@ app.post('/api/trips', async (req, res) => {
       DO UPDATE SET updated_at = NOW()
     `, [userId, 'user@unknown.com']);
 
-    // Insert flight with comprehensive data
     const insertQuery = `
       INSERT INTO flights(
         user_id, booking_reference, booking_hash, airline,
@@ -440,28 +409,18 @@ app.post('/api/trips', async (req, res) => {
       departureAirport,
       arrivalAirport,
       routeText,
-      
-      // Timing information
       departureDate,
       departureTime,
       arrivalDate,
       arrivalTime,
-      
-      // Arrays as JSON
       allDates ? JSON.stringify(allDates) : null,
       allTimes ? JSON.stringify(allTimes) : null,
-      
-      // Flight details
       flightNumber,
       aircraftType,
       serviceClass,
-      
-      // Pricing
       totalPrice,
       totalPriceText,
       currency || 'USD',
-      
-      // Additional info
       passengerInfo,
       url,
       scrapedAt ? new Date(scrapedAt) : new Date()
@@ -472,7 +431,6 @@ app.post('/api/trips', async (req, res) => {
     
     const savedFlight = result.rows[0];
     
-    // Create initial price history entry if price exists
     if (totalPrice) {
       await client.query(`
         INSERT INTO price_history (flight_id, price, source, checked_at)
@@ -480,7 +438,6 @@ app.post('/api/trips', async (req, res) => {
       `, [savedFlight.flight_id, totalPrice, airline || 'Extension Scrape']);
     }
     
-    // <<< ADDITION: INCREMENT USER'S FLIGHT COUNT >>>
     await client.query('UPDATE users SET total_flights = total_flights + 1 WHERE user_id = $1', [userId]);
 
     await client.query('COMMIT');
@@ -519,7 +476,6 @@ app.post('/api/trips', async (req, res) => {
     await client.query('ROLLBACK');
     console.error('Error saving enhanced flight:', error);
     
-    // Handle specific constraint violations
     if (error.code === '23505') { // Unique constraint violation
       return res.status(409).json({ 
         error: 'Booking already exists (database constraint)',
@@ -536,7 +492,6 @@ app.post('/api/trips', async (req, res) => {
   }
 });
 
-// Optimized endpoint to get trips for a user with pagination
 app.get('/api/trips/:userId', async (req, res) => {
   const { userId } = req.params;
   const page = parseInt(req.query.page) || 1;
@@ -582,11 +537,8 @@ app.get('/api/trips/:userId', async (req, res) => {
 });
 
 
-// <<< NEW CODE BLOCK STARTS HERE: DELETE FLIGHT ENDPOINT >>>
 app.delete('/api/trips/:flightId', authenticateUser, async (req, res) => {
   const { flightId } = req.params;
-  // This is insecure for production. In a real app, you would get the
-  // userId from the verified Firebase auth token, not the request body.
   const { userId } = req.body; 
 
   if (!userId) {
@@ -607,7 +559,6 @@ app.delete('/api/trips/:flightId', authenticateUser, async (req, res) => {
       return res.status(404).json({ error: 'Flight not found or user not authorized to delete.' });
     }
 
-    // Decrement the user's total_flights count
     await client.query(
       'UPDATE users SET total_flights = total_flights - 1 WHERE user_id = $1 AND total_flights > 0',
       [userId]
@@ -624,10 +575,8 @@ app.delete('/api/trips/:flightId', authenticateUser, async (req, res) => {
     client.release();
   }
 });
-// <<< NEW CODE BLOCK ENDS HERE >>>
 
 
-// Enhanced endpoint to get all trips with filters and pagination
 app.get('/api/trips', async (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const limit = Math.min(parseInt(req.query.limit) || 20, 100);
@@ -707,7 +656,6 @@ app.get('/api/trips', async (req, res) => {
   }
 });
 
-// Get system statistics
 app.get('/api/stats', async (req, res) => {
   try {
     const [
@@ -807,5 +755,5 @@ app.listen(PORT, () => {
   console.log(`Production ready for thousands of users!`);
   console.log(`Database: Enhanced with comprehensive duplicate prevention`);
   console.log(`Features: Rate limiting, performance monitoring, pagination`);
-  console.log(`   -> Stripe integration is active.`); // <<< NEW CODE ADDED
+  console.log(`   -> Stripe integration is active.`);
 });
