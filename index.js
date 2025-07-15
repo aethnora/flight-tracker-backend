@@ -1,16 +1,19 @@
+// IMPORTANT: To fix the 'Cannot find module 'cors'' error, you must install the cors package.
+// Open your backend project's terminal and run:
+// npm install cors
+// OR if you use yarn:
+// yarn add cors
+
 const express = require('express');
-const cors = require('cors'); // <-- ADD THIS LINE
+const cors = require('cors'); // This line requires the 'cors' package to be installed
 const { createTables, pool } = require('./database');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// <<< THIS IS THE FIX: Use the 'cors' middleware >>>
-// This properly handles all request types, including the preflight OPTIONS requests
-// that were causing the errors.
+// Use the 'cors' middleware
 app.use(cors());
-// <<< END OF FIX >>>
 
 // This MUST come BEFORE app.use(express.json()) to work correctly.
 // It uses a raw body parser specifically for the Stripe webhook endpoint.
