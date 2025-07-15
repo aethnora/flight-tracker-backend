@@ -282,7 +282,7 @@ app.post('/cancel-subscription', authenticateUser, async (req, res) => {
 
 // <<< NEW CODE BLOCK: Helper object for plan details >>>
 const planDetails = {
-    free: { limit: 2, frequencyHours: 120 }, // 5 days
+    free: { limit: 2, frequencyHours: 1 }, // 5 days
     pro: { limit: 4, frequencyHours: 72 },   // 3 days
     max: { limit: 8, frequencyHours: 72 },    // 3 days
 };
