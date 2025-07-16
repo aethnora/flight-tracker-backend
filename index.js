@@ -9,6 +9,13 @@ const cors = require('cors'); // This line requires the 'cors' package to be ins
 const { createTables, pool } = require('./database');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
+// <<< NEW: Dependencies for email parsing >>>
+const multer = require('multer');
+const upload = multer();
+// Assuming the new parser service is created at this location
+const { processInboundEmail } = require('./services/emailParserService');
+// <<< END OF NEW CODE BLOCK >>>
+
 const app = express();
 const PORT = process.env.PORT || 3001;
 
@@ -280,151 +287,178 @@ app.post('/cancel-subscription', authenticateUser, async (req, res) => {
 });
 
 
-// <<< NEW CODE BLOCK: Helper object for plan details >>>
 const planDetails = {
     free: { limit: 2, frequencyHours: 1 }, // 5 days
     pro: { limit: 4, frequencyHours: 72 },   // 3 days
     max: { limit: 8, frequencyHours: 72 },    // 3 days
 };
+
+
+// <<< NEW CODE BLOCK: Reusable helper function for creating trips >>>
+/**
+ * A reusable function to handle the logic of adding a flight to the database.
+ * This can be called by the manual entry endpoint and the email parsing endpoint.
+ * @param {object} flightData - The structured data for the flight to be added.
+ * @returns {object} The newly saved flight record.
+ * @throws An error if validation fails, plan limits are exceeded, or a database error occurs.
+ */
+const createTripInDatabase = async (flightData) => {
+    const {
+      userId, email, bookingReference, bookingHash, airline, departureAirport, arrivalAirport, routeText,
+      departureDate, departureTime, arrivalDate, arrivalTime, allDates, allTimes,
+      flightNumber, aircraftType, serviceClass, totalPrice, totalPriceText, currency,
+      passengerInfo, scrapedAt, url
+    } = flightData;
+
+    // --- Start Validation ---
+    if (!userId) throw new Error('User ID is required.');
+    if (!bookingReference || bookingReference === 'Not Found') throw new Error('Valid booking reference is required.');
+    if (!departureAirport || !arrivalAirport || departureAirport === 'Not Found' || arrivalAirport === 'Not Found') throw new Error('Valid departure and arrival airports are required.');
+    const airportCodeRegex = /^[A-Z]{3}$/;
+    if (!airportCodeRegex.test(departureAirport) || !airportCodeRegex.test(arrivalAirport)) throw new Error('Invalid airport code format.');
+    // --- End Validation ---
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        const userPlanQuery = `
+            SELECT 
+                u.subscription_plan, 
+                (SELECT COUNT(*) FROM flights WHERE user_id = u.user_id AND is_active = TRUE) as active_flights
+            FROM users u WHERE u.user_id = $1
+        `;
+        const userResult = await client.query(userPlanQuery, [userId]);
+        
+        let user = userResult.rows[0];
+        
+        if (!user) {
+            // Use the email from the parsed data if available, otherwise use a placeholder
+            const userEmail = email || 'user@unknown.com';
+            await client.query(`INSERT INTO users (user_id, email) VALUES ($1, $2) ON CONFLICT (user_id) DO NOTHING`, [userId, userEmail]);
+            user = { subscription_plan: 'free', active_flights: 0 };
+            console.log(`New user ${userId} created with default free plan.`);
+        }
+
+        const plan = planDetails[user.subscription_plan] || planDetails.free;
+        
+        if (user.active_flights >= plan.limit) {
+            throw new Error(`You have reached your limit of ${plan.limit} active flights for the ${user.subscription_plan} plan. Please upgrade or delete an existing trip.`);
+        }
+
+        const duplicateChecks = [
+            bookingHash ? client.query('SELECT flight_id FROM flights WHERE booking_hash = $1 AND user_id = $2', [bookingHash, userId]) : Promise.resolve({ rows: [] }),
+            client.query(`SELECT flight_id FROM flights WHERE user_id = $1 AND booking_reference = $2 AND departure_airport = $3 AND arrival_airport = $4 AND departure_date = $5`, [userId, bookingReference, departureAirport, arrivalAirport, departureDate])
+        ];
+
+        const [hashCheck, detailsCheck] = await Promise.all(duplicateChecks);
+        
+        if (hashCheck.rows.length > 0) throw new Error('Booking already exists (hash match)');
+        if (detailsCheck.rows.length > 0) throw new Error('Booking already exists (details match)');
+        
+        await client.query(`INSERT INTO users (user_id, email, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (user_id) DO UPDATE SET updated_at = NOW()`, [userId, email || 'user@unknown.com']);
+
+        const insertQuery = `
+          INSERT INTO flights(
+            user_id, booking_reference, booking_hash, airline, departure_airport, arrival_airport, route_text,
+            departure_date, departure_time, arrival_date, arrival_time, all_dates, all_times,
+            flight_number, aircraft, service_class, total_price, total_price_text, currency,
+            original_price, last_checked_price, lowest_price_seen, passenger_info, booking_url, scraped_at,
+            created_at, updated_at, check_frequency_hours
+          ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+            $17, $18, $19, $17, $17, $17, $20, $21, $22, NOW(), NOW(), $23
+          ) RETURNING *;
+        `;
+        const values = [
+          userId, bookingReference, bookingHash, airline || 'American Airlines', departureAirport, arrivalAirport, routeText,
+          departureDate, departureTime, arrivalDate, arrivalTime, allDates ? JSON.stringify(allDates) : null, allTimes ? JSON.stringify(allTimes) : null,
+          flightNumber, aircraftType, serviceClass, totalPrice, totalPriceText, currency || 'USD', passengerInfo, url, scrapedAt ? new Date(scrapedAt) : new Date(),
+          plan.frequencyHours
+        ];
+
+        const result = await client.query(insertQuery, values);
+        const savedFlight = result.rows[0];
+        
+        if (totalPrice) {
+            await client.query(`INSERT INTO price_history (flight_id, price, source, checked_at) VALUES ($1, $2, $3, NOW())`, [savedFlight.flight_id, totalPrice, airline || 'Email Scrape']);
+        }
+        
+        await client.query('UPDATE users SET total_flights = total_flights + 1 WHERE user_id = $1', [userId]);
+        await client.query('COMMIT');
+        return savedFlight;
+
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('Error in createTripInDatabase:', error.message);
+        throw error; // Re-throw to be handled by the calling endpoint
+    } finally {
+        client.release();
+    }
+};
 // <<< END OF NEW CODE BLOCK >>>
 
 
+// <<< MODIFIED: This endpoint now uses the reusable helper function >>>
 app.post('/api/trips', async (req, res) => {
-  const startTime = Date.now();
-  
-  const {
-    userId, bookingReference, bookingHash, airline, departureAirport, arrivalAirport, routeText,
-    departureDate, departureTime, arrivalDate, arrivalTime, allDates, allTimes,
-    flightNumber, aircraftType, serviceClass, totalPrice, totalPriceText, currency,
-    passengerInfo, scrapedAt, url
-  } = req.body;
-
-  if (!userId) return res.status(400).json({ error: 'User ID is required.' });
-  if (!bookingReference || bookingReference === 'Not Found') return res.status(400).json({ error: 'Valid booking reference is required.' });
-  if (!departureAirport || !arrivalAirport || departureAirport === 'Not Found' || arrivalAirport === 'Not Found') return res.status(400).json({ error: 'Valid departure and arrival airports are required.' });
-  const airportCodeRegex = /^[A-Z]{3}$/;
-  if (!airportCodeRegex.test(departureAirport) || !airportCodeRegex.test(arrivalAirport)) return res.status(400).json({ error: 'Invalid airport code format.' });
-
-  const client = await pool.connect();
-  
-  try {
-    await client.query('BEGIN');
-
-    // <<< NEW CODE BLOCK: Enforce plan limits and get plan details >>>
-    const userPlanQuery = `
-        SELECT 
-            u.subscription_plan, 
-            (SELECT COUNT(*) FROM flights WHERE user_id = u.user_id AND is_active = TRUE) as active_flights
-        FROM users u WHERE u.user_id = $1
-    `;
-    const userResult = await client.query(userPlanQuery, [userId]);
-    
-    let user = userResult.rows[0];
-    
-    // If user doesn't exist yet, create them with a default free plan
-    if (!user) {
-        await client.query(`INSERT INTO users (user_id, email) VALUES ($1, $2) ON CONFLICT (user_id) DO NOTHING`, [userId, 'user@unknown.com']);
-        user = { subscription_plan: 'free', active_flights: 0 };
-        console.log(`New user ${userId} created with default free plan.`);
-    }
-
-    const plan = planDetails[user.subscription_plan] || planDetails.free;
-    
-    if (user.active_flights >= plan.limit) {
-        await client.query('ROLLBACK');
-        return res.status(403).json({ 
-            error: `You have reached your limit of ${plan.limit} active flights for the ${user.subscription_plan} plan. Please upgrade or delete an existing trip.`
+    const startTime = Date.now();
+    try {
+        const savedFlight = await createTripInDatabase(req.body);
+        const processingTime = Date.now() - startTime;
+        
+        res.status(201).json({ 
+          message: 'Flight saved successfully!',
+          flight: {
+            flight_id: savedFlight.flight_id,
+            booking_reference: savedFlight.booking_reference,
+            airline: savedFlight.airline,
+            route: `${savedFlight.departure_airport} → ${savedFlight.arrival_airport}`,
+            departure_date: savedFlight.departure_date,
+            total_price: savedFlight.total_price
+          },
+          performance: {
+            processing_time_ms: processingTime
+          }
         });
+
+    } catch (error) {
+        let statusCode = 500;
+        if (error.message.includes('limit')) statusCode = 403; // Forbidden
+        if (error.message.includes('exists')) statusCode = 409; // Conflict
+        if (error.message.includes('required') || error.message.includes('Invalid')) statusCode = 400; // Bad Request
+
+        console.error('Error saving manual flight:', error.message);
+        res.status(statusCode).json({ error: 'Failed to save flight.', details: error.message });
     }
-    // <<< END OF NEW CODE BLOCK >>>
-
-    const duplicateChecks = [
-      bookingHash ? client.query('SELECT flight_id FROM flights WHERE booking_hash = $1 AND user_id = $2', [bookingHash, userId]) : Promise.resolve({ rows: [] }),
-      client.query(`SELECT flight_id FROM flights WHERE user_id = $1 AND booking_reference = $2 AND departure_airport = $3 AND arrival_airport = $4 AND departure_date = $5`, [userId, bookingReference, departureAirport, arrivalAirport, departureDate])
-    ];
-
-    const [hashCheck, detailsCheck] = await Promise.all(duplicateChecks);
-    
-    if (hashCheck.rows.length > 0) {
-      await client.query('ROLLBACK');
-      return res.status(409).json({ error: 'Booking already exists (hash match)', existing_flight_id: hashCheck.rows[0].flight_id, duplicate_type: 'hash' });
-    }
-    
-    if (detailsCheck.rows.length > 0) {
-      await client.query('ROLLBACK');
-      return res.status(409).json({ error: 'Booking already exists (details match)', existing_flight_id: detailsCheck.rows[0].flight_id, duplicate_type: 'details' });
-    }
-
-    // Ensure user exists (redundant if block above runs, but safe)
-    await client.query(`INSERT INTO users (user_id, email, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (user_id) DO UPDATE SET updated_at = NOW()`, [userId, 'user@unknown.com']);
-
-    const insertQuery = `
-      INSERT INTO flights(
-        user_id, booking_reference, booking_hash, airline,
-        departure_airport, arrival_airport, route_text,
-        departure_date, departure_time, arrival_date, arrival_time,
-        all_dates, all_times,
-        flight_number, aircraft, service_class,
-        total_price, total_price_text, currency,
-        original_price, last_checked_price, lowest_price_seen,
-        passenger_info, booking_url, scraped_at,
-        created_at, updated_at,
-        check_frequency_hours -- <<< NEW: Add check frequency to insert >>>
-      ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-        $17, $18, $19, $17, $17, $17, $20, $21, $22, NOW(), NOW(),
-        $23 -- <<< NEW: Value for check frequency >>>
-      ) RETURNING *;
-    `;
-
-    const values = [
-      userId, bookingReference, bookingHash, airline || 'American Airlines', departureAirport, arrivalAirport, routeText,
-      departureDate, departureTime, arrivalDate, arrivalTime, allDates ? JSON.stringify(allDates) : null, allTimes ? JSON.stringify(allTimes) : null,
-      flightNumber, aircraftType, serviceClass, totalPrice, totalPriceText, currency || 'USD', passengerInfo, url, scrapedAt ? new Date(scrapedAt) : new Date(),
-      plan.frequencyHours // <<< NEW: Pass the frequency based on the user's plan >>>
-    ];
-
-    const result = await client.query(insertQuery, values);
-    const savedFlight = result.rows[0];
-    
-    if (totalPrice) {
-      await client.query(`INSERT INTO price_history (flight_id, price, source, checked_at) VALUES ($1, $2, $3, NOW())`, [savedFlight.flight_id, totalPrice, airline || 'Extension Scrape']);
-    }
-    
-    // This column is now redundant because we can calculate it on the fly, but we'll keep updating it for now.
-    await client.query('UPDATE users SET total_flights = total_flights + 1 WHERE user_id = $1', [userId]);
-
-    await client.query('COMMIT');
-    
-    const processingTime = Date.now() - startTime;
-    
-    res.status(201).json({ 
-      message: 'Flight saved successfully!',
-      flight: {
-        flight_id: savedFlight.flight_id,
-        booking_reference: savedFlight.booking_reference,
-        airline: savedFlight.airline,
-        route: `${savedFlight.departure_airport} → ${savedFlight.arrival_airport}`,
-        departure_date: savedFlight.departure_date,
-        departure_time: savedFlight.departure_time,
-        service_class: savedFlight.service_class,
-        flight_number: savedFlight.flight_number,
-        total_price: savedFlight.total_price
-      },
-      performance: {
-        processing_time_ms: processingTime
-      }
-    });
-
-  } catch (error) {
-    await client.query('ROLLBACK');
-    console.error('Error saving enhanced flight:', error);
-    if (error.code === '23505') return res.status(409).json({ error: 'Booking already exists (database constraint)', duplicate_type: 'constraint' });
-    res.status(500).json({ error: 'Failed to save flight.', details: error.message });
-  } finally {
-    client.release();
-  }
 });
+
+
+// <<< NEW CODE BLOCK: Endpoint for receiving and processing forwarded emails >>>
+app.post('/api/email-ingest', upload.none(), async (req, res) => {
+    console.log('Received inbound email webhook...');
+    
+    try {
+        // processInboundEmail will find the user and scrape the flight data
+        const flightData = await processInboundEmail(req.body);
+        console.log(`Parsed flight for user ${flightData.userId}. Ref: ${flightData.bookingReference}`);
+
+        // Use the same reusable function to save the flight to the database
+        await createTripInDatabase(flightData);
+        console.log(`Successfully saved flight from email for user ${flightData.userId}`);
+
+        // SendGrid requires a 200 OK response to know the webhook was received successfully.
+        res.status(200).send('Email processed successfully.');
+
+    } catch (error) {
+        console.error('Failed to process inbound email:', error.message);
+        // We still send a 200 OK so SendGrid doesn't retry sending the same failed email.
+        // In a more advanced setup, you could log this error to a monitoring service
+        // or send a notification email to the user about the failure.
+        res.status(200).send('Error processing email.');
+    }
+});
+// <<< END OF NEW CODE BLOCK >>>
+
 
 app.get('/api/trips/:userId', async (req, res) => {
   const { userId } = req.params;
@@ -657,7 +691,6 @@ app.get('/api/stats', async (req, res) => {
 });
 
 
-// <<< NEW CODE BLOCK: Endpoint for automated cleanup cron job >>>
 app.post('/api/admin/cleanup-flights', async (req, res) => {
     // In production, you would secure this endpoint, e.g., with a secret key
     const adminKey = req.headers['x-admin-key'];
@@ -700,7 +733,6 @@ app.post('/api/admin/cleanup-flights', async (req, res) => {
         console.log('--- Finished automated cleanup ---');
     }
 });
-// <<< END OF NEW CODE BLOCK >>>
 
 
 // Error handling middleware
@@ -736,6 +768,6 @@ app.listen(PORT, () => {
   console.log(`Time: ${new Date().toISOString()}`);
   console.log(`Production ready for thousands of users!`);
   console.log(`Database: Enhanced with comprehensive duplicate prevention`);
-  console.log(`Features: Rate limiting, performance monitoring, pagination`);
+  console.log(`Features: Rate limiting, performance monitoring, pagination, email ingestion`);
   console.log(`   -> Stripe integration is active.`);
 });
