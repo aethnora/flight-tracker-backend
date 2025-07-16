@@ -73,7 +73,7 @@ const getFlightPrice = async (flightDetails) => {
         if (departureTime) {
             searchUrl += `&max=10`; 
         } else {
-            searchUrl += `&max=1`;
+            searchUrl += `&max=2`;
         }
 
         if (airline) searchUrl += `&includeAirlineCodes=${airline}`;
