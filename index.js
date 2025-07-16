@@ -19,7 +19,7 @@ const { processInboundEmail } = require('./services/emailParserService');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// <<< MODIFIED: Enhanced CORS configuration to fix the error >>>
+// <<< MODIFIED: Replaced the simple app.use(cors()) with a more robust configuration to fix the CORS error >>>
 // List of approved origins that can make requests to this backend.
 const allowedOrigins = [
     'http://localhost:5173', // Your local development frontend
@@ -48,7 +48,6 @@ const corsOptions = {
 // Use the new, more specific CORS options
 app.use(cors(corsOptions));
 // <<< END OF MODIFICATION >>>
-
 
 // This MUST come BEFORE app.use(express.json()) to work correctly.
 // It uses a raw body parser specifically for the Stripe webhook endpoint.
@@ -332,9 +331,9 @@ const planDetails = {
  */
 const createTripInDatabase = async (flightData) => {
     const {
-      userId, email, bookingReference, bookingHash, airline, departureAirport, arrivalAirport, routeText,
-      departureDate, departureTime, arrivalDate, arrivalTime, allDates, allTimes,
-      flightNumber, aircraftType, serviceClass, totalPrice, totalPriceText, currency,
+      userId, email, bookingReference, bookingHash, airline, airlineIataCode, departureAirport, arrivalAirport, routeText,
+      departureDate, departureTime, arrivalDate, arrivalTime, returnTime, allDates, allTimes,
+      flightNumber, aircraftType, serviceClass, amadeusTravelClass, totalPrice, totalPriceText, currency,
       passengerInfo, scrapedAt, url
     } = flightData;
 
@@ -388,20 +387,21 @@ const createTripInDatabase = async (flightData) => {
 
         const insertQuery = `
           INSERT INTO flights(
-            user_id, booking_reference, booking_hash, airline, departure_airport, arrival_airport, route_text,
-            departure_date, departure_time, arrival_date, arrival_time, all_dates, all_times,
-            flight_number, aircraft, service_class, total_price, total_price_text, currency,
+            user_id, booking_reference, booking_hash, airline, airline_iata_code, departure_airport, arrival_airport, route_text,
+            departure_date, departure_time, arrival_date, arrival_time, return_time, all_dates, all_times,
+            flight_number, aircraft, service_class, amadeus_travel_class, total_price, total_price_text, currency,
             original_price, last_checked_price, lowest_price_seen, passenger_info, booking_url, scraped_at,
             created_at, updated_at, check_frequency_hours
           ) VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-            $17, $18, $19, $17, $17, $17, $20, $21, $22, NOW(), NOW(), $23
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, 
+            $18, $19, $20, $21, $22, $20, $20, $20, $23, $24, $25, NOW(), NOW(), $26
           ) RETURNING *;
         `;
         const values = [
-          userId, bookingReference, bookingHash, airline || 'American Airlines', departureAirport, arrivalAirport, routeText,
-          departureDate, departureTime, arrivalDate, arrivalTime, allDates ? JSON.stringify(allDates) : null, allTimes ? JSON.stringify(allTimes) : null,
-          flightNumber, aircraftType, serviceClass, totalPrice, totalPriceText, currency || 'USD', passengerInfo, url, scrapedAt ? new Date(scrapedAt) : new Date(),
+          userId, bookingReference, bookingHash, airline, airlineIataCode, departureAirport, arrivalAirport, routeText,
+          departureDate, departureTime, arrivalDate, arrivalTime, returnTime, allDates ? JSON.stringify(allDates) : null, allTimes ? JSON.stringify(allTimes) : null,
+          flightNumber, aircraftType, serviceClass, amadeusTravelClass, totalPrice, totalPriceText, currency || 'USD',
+          passengerInfo, url, scrapedAt ? new Date(scrapedAt) : new Date(),
           plan.frequencyHours
         ];
 
