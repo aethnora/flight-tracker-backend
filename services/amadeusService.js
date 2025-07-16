@@ -1,21 +1,31 @@
 const fetch = require('node-fetch');
 
-const AMADEUS_API_BASE_URL = 'https://test.api.amadeus.com';
+// <<< MODIFIED: Switched from the test URL to the live Production URL >>>
+const AMADEUS_API_BASE_URL = 'https://api.amadeus.com'; // This is the live production endpoint
+
+// Store the access token in memory to reuse it until it expires.
 let amadeusAccessToken = {
     token: null,
     expiresAt: 0,
 };
 
+/**
+ * Gets a valid Amadeus API access token, refreshing it if necessary.
+ */
 const getAccessToken = async () => {
-    // ... (existing getAccessToken logic remains unchanged) ...
     const now = Date.now();
+
     if (amadeusAccessToken.token && now < amadeusAccessToken.expiresAt) {
         return amadeusAccessToken.token;
     }
+
+    console.log('Amadeus token is expired or missing. Fetching a new one from Production...');
     const { AMADEUS_CLIENT_ID, AMADEUS_CLIENT_SECRET } = process.env;
+
     if (!AMADEUS_CLIENT_ID || !AMADEUS_CLIENT_SECRET) {
         throw new Error('Amadeus API credentials are not set in environment variables.');
     }
+
     const authUrl = `${AMADEUS_API_BASE_URL}/v1/security/oauth2/token`;
     const body = `grant_type=client_credentials&client_id=${AMADEUS_CLIENT_ID}&client_secret=${AMADEUS_CLIENT_SECRET}`;
     try {
@@ -26,12 +36,13 @@ const getAccessToken = async () => {
         });
         if (!response.ok) {
             const errorData = await response.json();
+            // Throw the detailed error from Amadeus
             throw new Error(`Failed to get Amadeus token: ${response.statusText} - ${JSON.stringify(errorData)}`);
         }
         const data = await response.json();
         amadeusAccessToken = {
             token: data.access_token,
-            expiresAt: now + (data.expires_in * 1000) - 10000,
+            expiresAt: now + (data.expires_in * 1000) - 10000, // Refresh 10s before expiry
         };
         return amadeusAccessToken.token;
     } catch (error) {
@@ -52,8 +63,6 @@ const getFlightPrice = async (flightDetails) => {
     try {
         const accessToken = await getAccessToken();
         
-        // Build the base search URL. We intentionally leave out the time at first
-        // to get all offers for the day, making our search more robust.
         let searchUrl = `${AMADEUS_API_BASE_URL}/v2/shopping/flight-offers` +
             `?originLocationCode=${departureAirport}` +
             `&destinationLocationCode=${arrivalAirport}` +
@@ -61,7 +70,6 @@ const getFlightPrice = async (flightDetails) => {
             `&adults=1` +
             `&currencyCode=USD`;
 
-        // We increase max results to have a better chance of finding a time match.
         if (departureTime) {
             searchUrl += `&max=10`; 
         } else {
@@ -95,17 +103,14 @@ const getFlightPrice = async (flightDetails) => {
             return null;
         }
 
-        // --- NEW LOGIC: Find the best flight offer ---
         let bestFlightOffer;
 
         if (departureTime) {
             console.log(`Filtering results for flights near preferred time: ${departureTime}`);
-            // Convert the user's target time to minutes for easy comparison.
             const targetTimeInMinutes = parseInt(departureTime.split(':')[0]) * 60 + parseInt(departureTime.split(':')[1]);
             let closestTimeDiff = Infinity;
 
             for (const offer of data.data) {
-                // The departure time is in the first segment of the first itinerary.
                 const offerDepartureTime = offer.itineraries[0].segments[0].departure.at.split('T')[1];
                 const offerTimeInMinutes = parseInt(offerDepartureTime.split(':')[0]) * 60 + parseInt(offerDepartureTime.split(':')[1]);
                 const timeDiff = Math.abs(targetTimeInMinutes - offerTimeInMinutes);
@@ -115,9 +120,13 @@ const getFlightPrice = async (flightDetails) => {
                     bestFlightOffer = offer;
                 }
             }
-            console.log(`Found best match flight departing at: ${bestFlightOffer.itineraries[0].segments[0].departure.at.split('T')[1]}`);
+            if (bestFlightOffer) {
+                console.log(`Found best match flight departing at: ${bestFlightOffer.itineraries[0].segments[0].departure.at.split('T')[1]}`);
+            } else {
+                 console.log(`Could not find a suitable flight offer near the specified time.`);
+                 return null;
+            }
         } else {
-            // If no time is specified, just grab the first (and likely cheapest) result.
             bestFlightOffer = data.data[0];
         }
 
