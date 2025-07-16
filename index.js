@@ -19,8 +19,36 @@ const { processInboundEmail } = require('./services/emailParserService');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Use the 'cors' middleware
-app.use(cors());
+// <<< MODIFIED: Enhanced CORS configuration to fix the error >>>
+// List of approved origins that can make requests to this backend.
+const allowedOrigins = [
+    'http://localhost:5173', // Your local development frontend
+    process.env.CLIENT_URL,  // Your production frontend URL from environment variables
+    // Add any other domains you want to allow here
+];
+
+const corsOptions = {
+    origin: (origin, callback) => {
+        // Allow requests with no origin (like mobile apps, curl, or server-to-server requests)
+        if (!origin) return callback(null, true);
+
+        // If the origin of the request is in our whitelist, allow it.
+        // The .filter(Boolean) is added to remove any potential undefined values from allowedOrigins
+        if (allowedOrigins.filter(Boolean).indexOf(origin) !== -1) {
+            callback(null, true);
+        } else {
+            // Otherwise, block it.
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    credentials: true,
+    optionsSuccessStatus: 200 // For legacy browser support
+};
+
+// Use the new, more specific CORS options
+app.use(cors(corsOptions));
+// <<< END OF MODIFICATION >>>
+
 
 // This MUST come BEFORE app.use(express.json()) to work correctly.
 // It uses a raw body parser specifically for the Stripe webhook endpoint.
@@ -770,4 +798,3 @@ app.listen(PORT, () => {
   console.log(`Database: Enhanced with comprehensive duplicate prevention`);
   console.log(`Features: Rate limiting, performance monitoring, pagination, email ingestion`);
   console.log(`   -> Stripe integration is active.`);
-});
