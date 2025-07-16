@@ -12,6 +12,7 @@ const checkFlightPrice = async (flight) => {
     // A flight is considered round-trip if the 'all_dates' JSON array contains more than one date.
     const isRoundTrip = Array.isArray(flight.all_dates) && flight.all_dates.length > 1;
 
+    // <<< MODIFIED: Now passing the specific travel class for more accurate price checks >>>
     const priceData = await getFlightPrice({
         departureAirport: flight.departure_airport,
         arrivalAirport: flight.arrival_airport,
@@ -19,9 +20,7 @@ const checkFlightPrice = async (flight) => {
         returnDate: isRoundTrip ? flight.all_dates[1] : null, // Use the second date as the return date
         airline: flight.airline_iata_code, // This column should be populated by the scraper/form
         departureTime: flight.departure_time,
-        // <<< PASSING THE NEW TIME AND FARE PARAMETERS >>>
-        returnTime: flight.return_time,
-        travelClass: flight.amadeus_travel_class,
+        travelClass: flight.amadeus_travel_class, // NEW: Use the saved fare class for the API call
     });
 
     if (!priceData) {
@@ -144,12 +143,11 @@ const processAllDueFlights = async () => {
             JOIN users u ON f.user_id = u.user_id
             WHERE f.is_active = TRUE 
             AND f.departure_date::date > NOW()
-            -- <<< MODIFIED FOR TESTING: The following line is commented out to ignore the delay >>>
-            -- AND f.next_check_at <= NOW() 
+            AND f.next_check_at <= NOW()
         `);
 
         const dueFlights = dueFlightsResult.rows;
-        console.log(`Found ${dueFlights.length} flights to check (TESTING MODE).`);
+        console.log(`Found ${dueFlights.length} flights due for a price check.`);
 
         if (dueFlights.length === 0) {
             return;
