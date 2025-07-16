@@ -42,13 +42,15 @@ const getAccessToken = async () => {
 
 
 /**
- * Fetches the lowest current price for a flight, supporting trip type and fare class.
+ * Fetches the lowest current price for a flight, supporting trip type, fare class, and specific times.
  * @param {object} flightDetails - The details of the flight to check.
  * @param {string} flightDetails.travelClass - The Amadeus travel class code (e.g., 'ECONOMY', 'BUSINESS').
+ * @param {string} flightDetails.departureTime - The departure time in HH:MM format.
+ * @param {string} flightDetails.returnTime - The return departure time in HH:MM format.
  */
 const getFlightPrice = async (flightDetails) => {
-    // <<< MODIFIED: Destructure travelClass from flightDetails >>>
-    const { departureAirport, arrivalAirport, departureDate, returnDate, airline, travelClass } = flightDetails;
+    // <<< MODIFIED: Destructure departureTime and returnTime from flightDetails >>>
+    const { departureAirport, arrivalAirport, departureDate, returnDate, airline, travelClass, departureTime, returnTime } = flightDetails;
 
     try {
         const accessToken = await getAccessToken();
@@ -66,16 +68,29 @@ const getFlightPrice = async (flightDetails) => {
             searchUrl += `&includeAirlineCodes=${airline}`;
         }
         
-        // <<< NEW: Add travelClass to the API request if it exists >>>
         if (travelClass) {
             searchUrl += `&travelClass=${travelClass}`;
             console.log(`Searching with fare class: ${travelClass}`);
         }
 
+        // <<< NEW: Add departureTime to the API request if it exists >>>
+        // The Amadeus Flight Offers Search API uses `departureTime`. The HTML time input provides HH:MM format.
+        if (departureTime) {
+            searchUrl += `&departureTime=${departureTime}`;
+            console.log(`Searching with specific departure time: ${departureTime}`);
+        }
+
         // Add returnDate for round-trip searches
         if (returnDate) {
             searchUrl += `&returnDate=${returnDate}`;
-            console.log(`Performing ROUND-TRIP search for ${departureAirport} -> ${arrivalAirport}`);
+            // Note: The standard Flight Offers Search does not support a specific *return* time parameter.
+            // The API returns a list of flights for the return date, and we take the cheapest.
+            // For more specific return flight tracking, a different API flow would be needed.
+            if (returnTime) {
+                console.log(`Performing ROUND-TRIP search for return date ${returnDate}. Return time ${returnTime} is noted but not used in this API call.`);
+            } else {
+                console.log(`Performing ROUND-TRIP search for ${departureAirport} -> ${arrivalAirport}`);
+            }
         } else {
             console.log(`Performing ONE-WAY search for ${departureAirport} -> ${arrivalAirport}`);
         }

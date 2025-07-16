@@ -82,16 +82,17 @@ const createTables = async () => {
         booking_reference VARCHAR(50) NOT NULL,
         booking_hash VARCHAR(50) UNIQUE,
         airline VARCHAR(100),
-        airline_iata_code VARCHAR(10), -- <<< NEW: For Amadeus API precision
+        airline_iata_code VARCHAR(10),
         
         departure_airport VARCHAR(10),
         arrival_airport VARCHAR(10),
         route_text TEXT,
         
         departure_date VARCHAR(50),
-        departure_time VARCHAR(50),
+        departure_time VARCHAR(10), -- <<< NEW
         arrival_date VARCHAR(50),
         arrival_time VARCHAR(50),
+        return_time VARCHAR(10), -- <<< NEW
         
         all_dates JSONB,
         all_times JSONB,
@@ -99,7 +100,7 @@ const createTables = async () => {
         flight_number VARCHAR(20),
         aircraft VARCHAR(100),
         service_class VARCHAR(50),
-        amadeus_travel_class VARCHAR(50), -- <<< NEW: For Amadeus API precision
+        amadeus_travel_class VARCHAR(50),
         
         total_price NUMERIC(10, 2),
         total_price_text VARCHAR(100),
@@ -146,8 +147,10 @@ const createTables = async () => {
         'passenger_info': 'TEXT',
         'current_price': 'NUMERIC(10, 2)',
         'last_alerted_price': 'NUMERIC(10, 2)',
-        'airline_iata_code': 'VARCHAR(10)', // <<< NEW
-        'amadeus_travel_class': 'VARCHAR(50)' // <<< NEW
+        'airline_iata_code': 'VARCHAR(10)',
+        'amadeus_travel_class': 'VARCHAR(50)',
+        'departure_time': 'VARCHAR(10)', // <<< NEW
+        'return_time': 'VARCHAR(10)' // <<< NEW
     };
     
     const existingFlightColumnsResult = await pool.query(`
@@ -238,9 +241,10 @@ const createTables = async () => {
       'CREATE INDEX IF NOT EXISTS idx_flights_booking_ref_user ON flights(user_id, booking_reference);',
       'CREATE INDEX IF NOT EXISTS idx_flights_route ON flights(departure_airport, arrival_airport);',
       'CREATE INDEX IF NOT EXISTS idx_flights_airline ON flights(airline);',
-      'CREATE INDEX IF NOT EXISTS idx_flights_airline_iata_code ON flights(airline_iata_code) WHERE airline_iata_code IS NOT NULL;', // <<< NEW
+      'CREATE INDEX IF NOT EXISTS idx_flights_airline_iata_code ON flights(airline_iata_code) WHERE airline_iata_code IS NOT NULL;',
       'CREATE INDEX IF NOT EXISTS idx_flights_created_at ON flights(created_at DESC);',
       'CREATE INDEX IF NOT EXISTS idx_flights_departure_date ON flights(departure_date);',
+      'CREATE INDEX IF NOT EXISTS idx_flights_departure_datetime ON flights(departure_date, departure_time);', // <<< NEW
       'CREATE INDEX IF NOT EXISTS idx_flights_service_class ON flights(service_class) WHERE service_class IS NOT NULL;',
       'CREATE INDEX IF NOT EXISTS idx_flights_price_monitoring ON flights(next_check_at) WHERE is_active = true;',
       'CREATE INDEX IF NOT EXISTS idx_flights_price_range ON flights(total_price) WHERE total_price IS NOT NULL;',
@@ -294,7 +298,8 @@ const createTables = async () => {
     const essentialColumns = [
       'booking_reference', 'total_price', 'departure_airport', 'arrival_airport',
       'service_class', 'flight_number', 'all_dates', 'all_times', 'route_text',
-      'current_price', 'last_alerted_price', 'airline_iata_code', 'amadeus_travel_class' // Verify new columns
+      'current_price', 'last_alerted_price', 'airline_iata_code', 'amadeus_travel_class',
+      'departure_time', 'return_time' // <<< NEW
     ];
     
     const presentColumns = finalCheck.rows.map(row => row.column_name);
