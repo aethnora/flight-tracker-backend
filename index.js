@@ -798,3 +798,4 @@ app.listen(PORT, () => {
   console.log(`Database: Enhanced with comprehensive duplicate prevention`);
   console.log(`Features: Rate limiting, performance monitoring, pagination, email ingestion`);
   console.log(`   -> Stripe integration is active.`);
+});
