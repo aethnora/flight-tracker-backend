@@ -42,58 +42,37 @@ const getAccessToken = async () => {
 
 
 /**
- * Fetches the lowest current price for a flight, supporting trip type, fare class, and specific times.
+ * Fetches the lowest current price for a flight. If a departureTime is provided,
+ * it finds the flight offer closest to that time.
  * @param {object} flightDetails - The details of the flight to check.
- * @param {string} flightDetails.travelClass - The Amadeus travel class code (e.g., 'ECONOMY', 'BUSINESS').
- * @param {string} flightDetails.departureTime - The departure time in HH:MM format.
- * @param {string} flightDetails.returnTime - The return departure time in HH:MM format.
  */
 const getFlightPrice = async (flightDetails) => {
-    // <<< MODIFIED: Destructure departureTime and returnTime from flightDetails >>>
-    const { departureAirport, arrivalAirport, departureDate, returnDate, airline, travelClass, departureTime, returnTime } = flightDetails;
+    const { departureAirport, arrivalAirport, departureDate, returnDate, airline, travelClass, departureTime } = flightDetails;
 
     try {
         const accessToken = await getAccessToken();
         
-        // --- Build the search URL with new parameters ---
+        // Build the base search URL. We intentionally leave out the time at first
+        // to get all offers for the day, making our search more robust.
         let searchUrl = `${AMADEUS_API_BASE_URL}/v2/shopping/flight-offers` +
             `?originLocationCode=${departureAirport}` +
             `&destinationLocationCode=${arrivalAirport}` +
             `&departureDate=${departureDate}` +
             `&adults=1` +
-            `&currencyCode=USD` +
-            `&max=1`;
+            `&currencyCode=USD`;
 
-        if (airline) {
-            searchUrl += `&includeAirlineCodes=${airline}`;
-        }
-        
-        if (travelClass) {
-            searchUrl += `&travelClass=${travelClass}`;
-            console.log(`Searching with fare class: ${travelClass}`);
-        }
-
-        // <<< NEW: Add departureTime to the API request if it exists >>>
-        // The Amadeus Flight Offers Search API uses `departureTime`. The HTML time input provides HH:MM format.
+        // We increase max results to have a better chance of finding a time match.
         if (departureTime) {
-            searchUrl += `&departureTime=${departureTime}`;
-            console.log(`Searching with specific departure time: ${departureTime}`);
+            searchUrl += `&max=10`; 
+        } else {
+            searchUrl += `&max=1`;
         }
 
-        // Add returnDate for round-trip searches
-        if (returnDate) {
-            searchUrl += `&returnDate=${returnDate}`;
-            // Note: The standard Flight Offers Search does not support a specific *return* time parameter.
-            // The API returns a list of flights for the return date, and we take the cheapest.
-            // For more specific return flight tracking, a different API flow would be needed.
-            if (returnTime) {
-                console.log(`Performing ROUND-TRIP search for return date ${returnDate}. Return time ${returnTime} is noted but not used in this API call.`);
-            } else {
-                console.log(`Performing ROUND-TRIP search for ${departureAirport} -> ${arrivalAirport}`);
-            }
-        } else {
-            console.log(`Performing ONE-WAY search for ${departureAirport} -> ${arrivalAirport}`);
-        }
+        if (airline) searchUrl += `&includeAirlineCodes=${airline}`;
+        if (travelClass) searchUrl += `&travelClass=${travelClass}`;
+        if (returnDate) searchUrl += `&returnDate=${returnDate}`;
+        
+        console.log(`Searching for flights: ${departureAirport} -> ${arrivalAirport} on ${departureDate}`);
         
         const response = await fetch(searchUrl, {
             method: 'GET',
@@ -111,17 +90,42 @@ const getFlightPrice = async (flightDetails) => {
 
         const data = await response.json();
 
-        if (data.data && data.data.length > 0) {
-            const flightOffer = data.data[0];
-            return {
-                currentPrice: parseFloat(flightOffer.price.total),
-                currency: flightOffer.price.currency,
-                lastChecked: new Date().toISOString(),
-            };
-        } else {
+        if (!data.data || data.data.length === 0) {
             console.log(`No flight offers returned for the specified criteria.`);
             return null;
         }
+
+        // --- NEW LOGIC: Find the best flight offer ---
+        let bestFlightOffer;
+
+        if (departureTime) {
+            console.log(`Filtering results for flights near preferred time: ${departureTime}`);
+            // Convert the user's target time to minutes for easy comparison.
+            const targetTimeInMinutes = parseInt(departureTime.split(':')[0]) * 60 + parseInt(departureTime.split(':')[1]);
+            let closestTimeDiff = Infinity;
+
+            for (const offer of data.data) {
+                // The departure time is in the first segment of the first itinerary.
+                const offerDepartureTime = offer.itineraries[0].segments[0].departure.at.split('T')[1];
+                const offerTimeInMinutes = parseInt(offerDepartureTime.split(':')[0]) * 60 + parseInt(offerDepartureTime.split(':')[1]);
+                const timeDiff = Math.abs(targetTimeInMinutes - offerTimeInMinutes);
+
+                if (timeDiff < closestTimeDiff) {
+                    closestTimeDiff = timeDiff;
+                    bestFlightOffer = offer;
+                }
+            }
+            console.log(`Found best match flight departing at: ${bestFlightOffer.itineraries[0].segments[0].departure.at.split('T')[1]}`);
+        } else {
+            // If no time is specified, just grab the first (and likely cheapest) result.
+            bestFlightOffer = data.data[0];
+        }
+
+        return {
+            currentPrice: parseFloat(bestFlightOffer.price.total),
+            currency: bestFlightOffer.price.currency,
+            lastChecked: new Date().toISOString(),
+        };
 
     } catch (error) {
         console.error(`Error in getFlightPrice for ${departureAirport}-${arrivalAirport}:`, error);
