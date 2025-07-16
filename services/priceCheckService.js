@@ -12,6 +12,7 @@ const checkFlightPrice = async (flight) => {
     // A flight is considered round-trip if the 'all_dates' JSON array contains more than one date.
     const isRoundTrip = Array.isArray(flight.all_dates) && flight.all_dates.length > 1;
 
+    // <<< MODIFIED: Now passing the specific travel class for more accurate price checks >>>
     const priceData = await getFlightPrice({
         departureAirport: flight.departure_airport,
         arrivalAirport: flight.arrival_airport,
@@ -19,6 +20,7 @@ const checkFlightPrice = async (flight) => {
         returnDate: isRoundTrip ? flight.all_dates[1] : null, // Use the second date as the return date
         airline: flight.airline_iata_code, // This column should be populated by the scraper/form
         departureTime: flight.departure_time,
+        travelClass: flight.amadeus_travel_class, // NEW: Use the saved fare class for the API call
     });
 
     if (!priceData) {

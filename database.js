@@ -50,8 +50,8 @@ const createTables = async () => {
       'total_flights': 'INTEGER DEFAULT 0',
       'last_activity': 'TIMESTAMP DEFAULT NOW()', 
       'updated_at': 'TIMESTAMP DEFAULT NOW()',
-      'stripe_customer_id': 'VARCHAR(255) UNIQUE', // New
-      'lifetime_savings': 'NUMERIC(10, 2) DEFAULT 0.00' // New
+      'stripe_customer_id': 'VARCHAR(255) UNIQUE',
+      'lifetime_savings': 'NUMERIC(10, 2) DEFAULT 0.00'
     };
 
     const existingUserColumns = await pool.query(`
@@ -73,54 +73,6 @@ const createTables = async () => {
       }
     }
 
-    // Check existing flights table structure
-    const tableExistsQuery = `
-      SELECT EXISTS (
-        SELECT FROM information_schema.tables 
-        WHERE table_name = 'flights'
-      );
-    `;
-    
-    const tableExists = await pool.query(tableExistsQuery);
-    
-    if (tableExists.rows[0].exists) {
-      // Check for new columns
-      const columnsQuery = `
-        SELECT column_name 
-        FROM information_schema.columns 
-        WHERE table_name = 'flights';
-      `;
-      
-      const columns = await pool.query(columnsQuery);
-      const existingColumns = columns.rows.map(row => row.column_name);
-      
-      console.log('Existing flights table has', existingColumns.length, 'columns');
-      
-      // Add missing columns for enhanced data and new alert logic
-      const newColumns = {
-        'route_text': 'TEXT',
-        'all_dates': 'JSONB',
-        'all_times': 'JSONB', 
-        'aircraft': 'VARCHAR(100)',
-        'passenger_info': 'TEXT',
-        'current_price': 'NUMERIC(10, 2)', // New: For displaying current price
-        'last_alerted_price': 'NUMERIC(10, 2)' // New: For advanced alert logic
-      };
-      
-      for (const [columnName, columnType] of Object.entries(newColumns)) {
-        if (!existingColumns.includes(columnName)) {
-          try {
-            await pool.query(`ALTER TABLE flights ADD COLUMN ${columnName} ${columnType};`);
-            console.log(`Added enhanced column: ${columnName}`);
-          } catch (err) {
-            console.warn(`Failed to add column ${columnName}:`, err.message);
-          }
-        }
-      }
-    } else {
-      console.log('Creating new flights table with enhanced schema...');
-    }
-
     // Create comprehensive flights table with correct syntax and new columns
     const flightTableQuery = `
       CREATE TABLE IF NOT EXISTS flights (
@@ -130,6 +82,7 @@ const createTables = async () => {
         booking_reference VARCHAR(50) NOT NULL,
         booking_hash VARCHAR(50) UNIQUE,
         airline VARCHAR(100),
+        airline_iata_code VARCHAR(10), -- <<< NEW: For Amadeus API precision
         
         departure_airport VARCHAR(10),
         arrival_airport VARCHAR(10),
@@ -146,6 +99,7 @@ const createTables = async () => {
         flight_number VARCHAR(20),
         aircraft VARCHAR(100),
         service_class VARCHAR(50),
+        amadeus_travel_class VARCHAR(50), -- <<< NEW: For Amadeus API precision
         
         total_price NUMERIC(10, 2),
         total_price_text VARCHAR(100),
@@ -153,8 +107,8 @@ const createTables = async () => {
         
         original_price NUMERIC(10, 2),
         last_checked_price NUMERIC(10, 2),
-        current_price NUMERIC(10, 2), -- New: For displaying current price
-        last_alerted_price NUMERIC(10, 2), -- New: For advanced alert logic
+        current_price NUMERIC(10, 2),
+        last_alerted_price NUMERIC(10, 2),
         lowest_price_seen NUMERIC(10, 2),
         
         passenger_info TEXT,
@@ -182,6 +136,37 @@ const createTables = async () => {
 
     await pool.query(flightTableQuery);
     console.log('Enhanced flights table ready.');
+
+    // Programmatically add missing columns to the flights table if it already exists
+    const flightColumnsToAdd = {
+        'route_text': 'TEXT',
+        'all_dates': 'JSONB',
+        'all_times': 'JSONB', 
+        'aircraft': 'VARCHAR(100)',
+        'passenger_info': 'TEXT',
+        'current_price': 'NUMERIC(10, 2)',
+        'last_alerted_price': 'NUMERIC(10, 2)',
+        'airline_iata_code': 'VARCHAR(10)', // <<< NEW
+        'amadeus_travel_class': 'VARCHAR(50)' // <<< NEW
+    };
+    
+    const existingFlightColumnsResult = await pool.query(`
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_name = 'flights';
+    `);
+    const existingFlightColumns = existingFlightColumnsResult.rows.map(row => row.column_name);
+
+    for (const [columnName, columnType] of Object.entries(flightColumnsToAdd)) {
+        if (!existingFlightColumns.includes(columnName)) {
+            try {
+                await pool.query(`ALTER TABLE flights ADD COLUMN ${columnName} ${columnType};`);
+                console.log(`Added flight column: ${columnName}`);
+            } catch (err) {
+                console.warn(`Failed to add flight column ${columnName}:`, err.message);
+            }
+        }
+    }
 
     // Add constraints separately (safer approach)
     try {
@@ -253,6 +238,7 @@ const createTables = async () => {
       'CREATE INDEX IF NOT EXISTS idx_flights_booking_ref_user ON flights(user_id, booking_reference);',
       'CREATE INDEX IF NOT EXISTS idx_flights_route ON flights(departure_airport, arrival_airport);',
       'CREATE INDEX IF NOT EXISTS idx_flights_airline ON flights(airline);',
+      'CREATE INDEX IF NOT EXISTS idx_flights_airline_iata_code ON flights(airline_iata_code) WHERE airline_iata_code IS NOT NULL;', // <<< NEW
       'CREATE INDEX IF NOT EXISTS idx_flights_created_at ON flights(created_at DESC);',
       'CREATE INDEX IF NOT EXISTS idx_flights_departure_date ON flights(departure_date);',
       'CREATE INDEX IF NOT EXISTS idx_flights_service_class ON flights(service_class) WHERE service_class IS NOT NULL;',
@@ -260,7 +246,7 @@ const createTables = async () => {
       'CREATE INDEX IF NOT EXISTS idx_flights_price_range ON flights(total_price) WHERE total_price IS NOT NULL;',
       'CREATE INDEX IF NOT EXISTS idx_users_activity ON users(last_activity DESC);',
       'CREATE INDEX IF NOT EXISTS idx_users_subscription ON users(subscription_plan);',
-      'CREATE INDEX IF NOT EXISTS idx_users_stripe_customer_id ON users(stripe_customer_id) WHERE stripe_customer_id IS NOT NULL;', // New index
+      'CREATE INDEX IF NOT EXISTS idx_users_stripe_customer_id ON users(stripe_customer_id) WHERE stripe_customer_id IS NOT NULL;',
       'CREATE INDEX IF NOT EXISTS idx_price_history_flight_time ON price_history(flight_id, checked_at DESC);',
       'CREATE INDEX IF NOT EXISTS idx_price_history_recent ON price_history(checked_at DESC);'
     ];
@@ -308,7 +294,7 @@ const createTables = async () => {
     const essentialColumns = [
       'booking_reference', 'total_price', 'departure_airport', 'arrival_airport',
       'service_class', 'flight_number', 'all_dates', 'all_times', 'route_text',
-      'current_price', 'last_alerted_price' // Verify new columns
+      'current_price', 'last_alerted_price', 'airline_iata_code', 'amadeus_travel_class' // Verify new columns
     ];
     
     const presentColumns = finalCheck.rows.map(row => row.column_name);
