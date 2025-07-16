@@ -7,6 +7,12 @@ const notificationService = require('./notificationService');
  * @param {object} flight - A flight object from the database.
  */
 const checkFlightPrice = async (flight) => {
+    // <<< MODIFIED FOR DEBUGGING: Log the entire flight object >>>
+    // This will print all the data from the database for the flight being checked.
+    console.log('--- Full Flight Data for ID:', flight.flight_id, '---');
+    console.log(flight);
+    console.log('------------------------------------------');
+    
     console.log(`Checking price for flight ID: ${flight.flight_id} (${flight.departure_airport} to ${flight.arrival_airport})`);
 
     // A flight is considered round-trip if the 'all_dates' JSON array contains more than one date.
@@ -19,7 +25,6 @@ const checkFlightPrice = async (flight) => {
         returnDate: isRoundTrip ? flight.all_dates[1] : null, // Use the second date as the return date
         airline: flight.airline_iata_code, // This column should be populated by the scraper/form
         departureTime: flight.departure_time,
-        // <<< PASSING THE NEW TIME AND FARE PARAMETERS >>>
         returnTime: flight.return_time,
         travelClass: flight.amadeus_travel_class,
     });
