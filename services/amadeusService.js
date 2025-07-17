@@ -1,31 +1,23 @@
 const fetch = require('node-fetch');
 
-// Using the production URL. Switch to https://test.api.amadeus.com for testing.
+// Using the production URL.
 const AMADEUS_API_BASE_URL = 'https://api.amadeus.com'; 
 
-// Store the access token in memory to reuse it until it expires.
 let amadeusAccessToken = {
     token: null,
     expiresAt: 0,
 };
 
-/**
- * Gets a valid Amadeus API access token, refreshing it if necessary.
- */
 const getAccessToken = async () => {
     const now = Date.now();
-
     if (amadeusAccessToken.token && now < amadeusAccessToken.expiresAt) {
         return amadeusAccessToken.token;
     }
-
     console.log('Amadeus token is expired or missing. Fetching a new one from Production...');
     const { AMADEUS_CLIENT_ID, AMADEUS_CLIENT_SECRET } = process.env;
-
     if (!AMADEUS_CLIENT_ID || !AMADEUS_CLIENT_SECRET) {
         throw new Error('Amadeus API credentials are not set in environment variables.');
     }
-
     const authUrl = `${AMADEUS_API_BASE_URL}/v1/security/oauth2/token`;
     const body = `grant_type=client_credentials&client_id=${AMADEUS_CLIENT_ID}&client_secret=${AMADEUS_CLIENT_SECRET}`;
     try {
@@ -41,7 +33,7 @@ const getAccessToken = async () => {
         const data = await response.json();
         amadeusAccessToken = {
             token: data.access_token,
-            expiresAt: now + (data.expires_in * 1000) - 10000, // Refresh 10s before expiry
+            expiresAt: now + (data.expires_in * 1000) - 10000,
         };
         return amadeusAccessToken.token;
     } catch (error) {
@@ -50,12 +42,6 @@ const getAccessToken = async () => {
     }
 };
 
-
-/**
- * Fetches the lowest current price for a flight. If a departureTime is provided,
- * it finds the flight offer closest to that time.
- * @param {object} flightDetails - The details of the flight to check.
- */
 const getFlightPrice = async (flightDetails) => {
     const { departureAirport, arrivalAirport, departureDate, returnDate, airline, travelClass, departureTime } = flightDetails;
 
@@ -75,11 +61,15 @@ const getFlightPrice = async (flightDetails) => {
             searchUrl += `&max=1`;
         }
 
+        // <<< MODIFIED FOR TESTING: This block is now also commented out to make the search broader >>>
+        /*
         if (airline) {
-            searchUrl += `&includeAirlineCodes=${airline}`;
+            console.log(`NOTE: Airline filtering is disabled. Searching for all airlines.`);
+            // searchUrl += `&includeAirlineCodes=${airline}`;
         }
+        */
         
-        // <<< MODIFIED FOR TESTING: This block is commented out to disable fare class filtering >>>
+        // Fare class filtering remains disabled
         /*
         if (travelClass) {
             console.log(`NOTE: Fare class filtering is disabled. Searching for all classes.`);
