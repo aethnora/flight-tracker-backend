@@ -383,7 +383,17 @@ const createTripInDatabase = async (flightData) => {
         if (hashCheck.rows.length > 0) throw new Error('Booking already exists (hash match)');
         if (detailsCheck.rows.length > 0) throw new Error('Booking already exists (details match)');
         
-        await client.query(`INSERT INTO users (user_id, email, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (user_id) DO UPDATE SET updated_at = NOW()`, [userId, email || 'user@unknown.com']);
+        // <<< FIX APPLIED HERE >>>
+        // This query now correctly creates a user if they don't exist, or updates their
+        // email and activity timestamp if they do. This prevents the "unknown@email.com" issue.
+        await client.query(`
+          INSERT INTO users (user_id, email, updated_at) 
+          VALUES ($1, $2, NOW()) 
+          ON CONFLICT (user_id) 
+          DO UPDATE SET 
+            email = EXCLUDED.email, 
+            updated_at = NOW()
+        `, [userId, email || 'user@unknown.com']);
 
         const insertQuery = `
           INSERT INTO flights(
