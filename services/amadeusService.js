@@ -1,7 +1,7 @@
 const fetch = require('node-fetch');
 
-// <<< MODIFIED: Switched from the test URL to the live Production URL >>>
-const AMADEUS_API_BASE_URL = 'https://api.amadeus.com'; // This is the live production endpoint
+// Using the production URL. Switch to https://test.api.amadeus.com for testing.
+const AMADEUS_API_BASE_URL = 'https://api.amadeus.com'; 
 
 // Store the access token in memory to reuse it until it expires.
 let amadeusAccessToken = {
@@ -36,7 +36,6 @@ const getAccessToken = async () => {
         });
         if (!response.ok) {
             const errorData = await response.json();
-            // Throw the detailed error from Amadeus
             throw new Error(`Failed to get Amadeus token: ${response.statusText} - ${JSON.stringify(errorData)}`);
         }
         const data = await response.json();
@@ -73,12 +72,24 @@ const getFlightPrice = async (flightDetails) => {
         if (departureTime) {
             searchUrl += `&max=10`; 
         } else {
-            searchUrl += `&max=2`;
+            searchUrl += `&max=1`;
         }
 
-        if (airline) searchUrl += `&includeAirlineCodes=${airline}`;
-        if (travelClass) searchUrl += `&travelClass=${travelClass}`;
-        if (returnDate) searchUrl += `&returnDate=${returnDate}`;
+        if (airline) {
+            searchUrl += `&includeAirlineCodes=${airline}`;
+        }
+        
+        // <<< MODIFIED FOR TESTING: This block is commented out to disable fare class filtering >>>
+        /*
+        if (travelClass) {
+            console.log(`NOTE: Fare class filtering is disabled. Searching for all classes.`);
+            // searchUrl += `&travelClass=${travelClass}`;
+        }
+        */
+
+        if (returnDate) {
+            searchUrl += `&returnDate=${returnDate}`;
+        }
         
         console.log(`Searching for flights: ${departureAirport} -> ${arrivalAirport} on ${departureDate}`);
         
