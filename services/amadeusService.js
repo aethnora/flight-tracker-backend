@@ -53,28 +53,13 @@ const getFlightPrice = async (flightDetails) => {
             `&destinationLocationCode=${arrivalAirport}` +
             `&departureDate=${departureDate}` +
             `&adults=1` +
-            `&currencyCode=USD`;
+            `&currencyCode=USD` +
+            `&max=5`; // Always ask for 5 results to have options to filter through
 
-        if (departureTime) {
-            searchUrl += `&max=10`; 
-        } else {
-            searchUrl += `&max=1`;
-        }
-
-        // <<< MODIFIED FOR TESTING: This block is now also commented out to make the search broader >>>
+        // The API-level filters are commented out to ensure we get a broad set of results first.
         /*
-        if (airline) {
-            console.log(`NOTE: Airline filtering is disabled. Searching for all airlines.`);
-            // searchUrl += `&includeAirlineCodes=${airline}`;
-        }
-        */
-        
-        // Fare class filtering remains disabled
-        /*
-        if (travelClass) {
-            console.log(`NOTE: Fare class filtering is disabled. Searching for all classes.`);
-            // searchUrl += `&travelClass=${travelClass}`;
-        }
+        if (airline) { searchUrl += `&includeAirlineCodes=${airline}`; }
+        if (travelClass) { searchUrl += `&travelClass=${travelClass}`; }
         */
 
         if (returnDate) {
@@ -104,14 +89,35 @@ const getFlightPrice = async (flightDetails) => {
             return null;
         }
 
-        let bestFlightOffer;
+        // --- NEW: Post-API Filtering Logic ---
+        let availableOffers = data.data;
+        let bestFlightOffer = null;
 
+        // Step 1: Filter by airline if one was provided
+        if (airline) {
+            console.log(`Filtering results to find airline: ${airline}`);
+            const airlineSpecificOffers = availableOffers.filter(offer => 
+                offer.itineraries.some(itinerary => 
+                    itinerary.segments.every(segment => segment.carrierCode === airline)
+                )
+            );
+
+            if (airlineSpecificOffers.length > 0) {
+                console.log(`Found ${airlineSpecificOffers.length} offer(s) for airline ${airline}.`);
+                availableOffers = airlineSpecificOffers; // Update our list to only include these offers
+            } else {
+                console.log(`No offers found for airline ${airline} in the top 5 results.`);
+                return null; // Exit if the desired airline is not found
+            }
+        }
+
+        // Step 2: From the (now possibly filtered) list, find the best match by time
         if (departureTime) {
             console.log(`Filtering results for flights near preferred time: ${departureTime}`);
             const targetTimeInMinutes = parseInt(departureTime.split(':')[0]) * 60 + parseInt(departureTime.split(':')[1]);
             let closestTimeDiff = Infinity;
 
-            for (const offer of data.data) {
+            for (const offer of availableOffers) {
                 const offerDepartureTime = offer.itineraries[0].segments[0].departure.at.split('T')[1];
                 const offerTimeInMinutes = parseInt(offerDepartureTime.split(':')[0]) * 60 + parseInt(offerDepartureTime.split(':')[1]);
                 const timeDiff = Math.abs(targetTimeInMinutes - offerTimeInMinutes);
@@ -123,12 +129,15 @@ const getFlightPrice = async (flightDetails) => {
             }
             if (bestFlightOffer) {
                 console.log(`Found best match flight departing at: ${bestFlightOffer.itineraries[0].segments[0].departure.at.split('T')[1]}`);
-            } else {
-                 console.log(`Could not find a suitable flight offer near the specified time.`);
-                 return null;
             }
         } else {
-            bestFlightOffer = data.data[0];
+            // If no specific time, take the first (cheapest) offer from the available list
+            bestFlightOffer = availableOffers[0];
+        }
+
+        if (!bestFlightOffer) {
+            console.log(`Could not find a suitable flight offer after filtering.`);
+            return null;
         }
 
         return {
